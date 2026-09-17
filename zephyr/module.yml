@@ -1,0 +1,4 @@
+name: zmk-split-conn-ladder
+build:
+  cmake: .
+  kconfig: Kconfig

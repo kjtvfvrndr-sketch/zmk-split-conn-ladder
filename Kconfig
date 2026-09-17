@@ -1,0 +1,147 @@
+menuconfig ZMK_SPLIT_CONN_LADDER
+	bool "Step SPLIT-link connection parameters down while idle"
+	depends on ZMK_SPLIT_BLE && ZMK_SPLIT_ROLE_CENTRAL
+	select ZMK_LOW_PRIORITY_WORK_QUEUE
+	help
+	  Runs on the CENTRAL half only and touches the SPLIT link only.
+
+	  On the split link we are central, so a parameter update is an order:
+	  no negotiation, no rejection, applied at a Link Layer instant. The
+	  host link is deliberately left alone -- there we are peripheral and
+	  could only ask, and its own latency already puts it at roughly two
+	  connection events per second against ~133 for a 7.5 ms split link.
+
+	  ACTIVE parameters are NOT configured here. They are
+	  ZMK_SPLIT_BLE_PREF_INT / _LATENCY / _TIMEOUT -- the same values the
+	  link is created with, so the two cannot drift apart.
+
+if ZMK_SPLIT_CONN_LADDER
+
+config ZMK_SPLIT_CONN_LADDER_STEPS
+	int "Number of idle steps"
+	range 1 4
+	default 3
+	help
+	  Steps below this count are ignored entirely, so leaving their values
+	  at the defaults is harmless.
+
+config ZMK_SPLIT_CONN_LADDER_SETTLE_MS
+	int "Delay before re-applying a step to a freshly connected link (ms)"
+	range 0 30000
+	default 3000
+	help
+	  Right after `connected` Zephyr sends its own automatic parameter
+	  update, and the controller runs one LL procedure at a time. Wait it
+	  out. If "param update rejected: -16" shows up in the log, raise this.
+
+config ZMK_SPLIT_CONN_LADDER_RETRY_MS
+	int "Retry delay after a rejected parameter update (ms)"
+	range 50 5000
+	default 500
+
+#
+# Units are Bluetooth units, not milliseconds:
+#   interval -- 1.25 ms steps:  12 = 15 ms   24 = 30 ms
+#                               48 = 60 ms   96 = 120 ms   160 = 200 ms
+#   timeout  -- 10 ms steps:   400 = 4 s    600 = 6 s     800 = 8 s
+#   latency  -- a plain count of connection events
+#
+# Derived quantities, all in milliseconds:
+#   LED sync delay, and how often the peripheral must be on air
+#                                   = interval * (latency + 1) * 1.25
+#   ramp-up back to ACTIVE          = interval * 6 * 1.25
+#   first left-hand key after a step= interval * 1.25 (worst case)
+#
+# Hard requirement, checked at build time and by Zephyr at runtime:
+#   timeout * 4 > (1 + latency) * interval
+#
+
+config ZMK_SPLIT_CONN_LADDER_S1_AFTER_MS
+	int "Step 1: delay after entering idle (ms)"
+	range 0 3600000
+	default 60000
+	help
+	  Hysteresis before the ladder starts moving. Idle gaps shorter than
+	  ZMK_IDLE_TIMEOUT plus this value cost zero parameter updates, so
+	  bursty typing never pays a ramp-up. 0 starts stepping down at once.
+
+config ZMK_SPLIT_CONN_LADDER_S1_INT
+	int "Step 1: connection interval (1.25 ms units)"
+	range 6 3200
+	default 24
+
+config ZMK_SPLIT_CONN_LADDER_S1_LATENCY
+	int "Step 1: peripheral latency (events)"
+	range 0 499
+	default 30
+
+config ZMK_SPLIT_CONN_LADDER_S1_TIMEOUT
+	int "Step 1: supervision timeout (10 ms units)"
+	range 10 3200
+	default 600
+
+config ZMK_SPLIT_CONN_LADDER_S2_AFTER_MS
+	int "Step 2: delay after entering idle (ms)"
+	range 0 3600000
+	default 150000
+
+config ZMK_SPLIT_CONN_LADDER_S2_INT
+	int "Step 2: connection interval (1.25 ms units)"
+	range 6 3200
+	default 48
+
+config ZMK_SPLIT_CONN_LADDER_S2_LATENCY
+	int "Step 2: peripheral latency (events)"
+	range 0 499
+	default 30
+
+config ZMK_SPLIT_CONN_LADDER_S2_TIMEOUT
+	int "Step 2: supervision timeout (10 ms units)"
+	range 10 3200
+	default 600
+
+config ZMK_SPLIT_CONN_LADDER_S3_AFTER_MS
+	int "Step 3: delay after entering idle (ms)"
+	range 0 3600000
+	default 600000
+
+config ZMK_SPLIT_CONN_LADDER_S3_INT
+	int "Step 3: connection interval (1.25 ms units)"
+	range 6 3200
+	default 96
+
+config ZMK_SPLIT_CONN_LADDER_S3_LATENCY
+	int "Step 3: peripheral latency (events)"
+	range 0 499
+	default 20
+
+config ZMK_SPLIT_CONN_LADDER_S3_TIMEOUT
+	int "Step 3: supervision timeout (10 ms units)"
+	range 10 3200
+	default 800
+
+config ZMK_SPLIT_CONN_LADDER_S4_AFTER_MS
+	int "Step 4: delay after entering idle (ms)"
+	range 0 3600000
+	default 1800000
+
+config ZMK_SPLIT_CONN_LADDER_S4_INT
+	int "Step 4: connection interval (1.25 ms units)"
+	range 6 3200
+	default 160
+
+config ZMK_SPLIT_CONN_LADDER_S4_LATENCY
+	int "Step 4: peripheral latency (events)"
+	range 0 499
+	default 12
+
+config ZMK_SPLIT_CONN_LADDER_S4_TIMEOUT
+	int "Step 4: supervision timeout (10 ms units)"
+	range 10 3200
+	default 800
+
+module = ZMK_SPLIT_CONN_LADDER
+module-str = zmk_split_conn_ladder
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ZMK_SPLIT_CONN_LADDER
