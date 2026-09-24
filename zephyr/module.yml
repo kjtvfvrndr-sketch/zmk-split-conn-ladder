@@ -2,3 +2,6 @@ name: zmk-split-conn-ladder
 build:
   cmake: .
   kconfig: Kconfig
+  settings:
+    # dts/ (behavior node, binding) and include/dt-bindings/ for the keymap
+    dts_root: .

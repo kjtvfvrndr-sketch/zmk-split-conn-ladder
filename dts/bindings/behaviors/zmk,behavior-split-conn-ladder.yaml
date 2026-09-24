@@ -1,0 +1,10 @@
+# Copyright (c) 2026 eXidno
+# SPDX-License-Identifier: MIT
+
+description: |
+  Switches the split connection ladder between AUTO, ON and OFF.
+  Parameter values are in <dt-bindings/zmk/split_conn_ladder.h>.
+
+compatible: "zmk,behavior-split-conn-ladder"
+
+include: one_param.yaml

@@ -1,0 +1,37 @@
+/*
+ * Кнопка режима лестницы — фрагмент для config/k04_micro_ruen.keymap
+ * (раскладка ПРАВОЙ, центральной половины; левой сборке это не нужно).
+ *
+ * 1. Рядом с остальными #include в начале файла:
+ */
+#include <behaviors/split_conn_ladder.dtsi>
+#include <dt-bindings/zmk/split_conn_ladder.h>
+
+/*
+ * 2. На любой слой — например в adj, на свободный &trans в ряду больших
+ *    пальцев. НЕ на позиции 31 и 34: ими удерживается сам слой adj
+ *    (&mo 4 + &mo 5 или &mo 2 + &mo 5), и кнопка там сломает вход в слой.
+ *
+ *    Было:   &ind_bat  &trans  &trans  &trans  &trans  &trans
+ *    Стало:  &ind_bat  &trans  &ladder LADDER_TOG  &trans  &trans  &trans
+ *
+ *    &ladder LADDER_TOG    ON <-> AUTO (из OFF — в ON)
+ *    &ladder LADDER_CYCLE  AUTO -> ON -> OFF -> AUTO, все режимы одной клавишей
+ *    &ladder LADDER_AUTO   AUTO: на батарее ступени батареи, на кабеле —
+ *                          кабельные (ACTIVE, если на кабеле обе половины)
+ *    &ladder LADDER_ON     ON: ступени батареи и от USB (для логов)
+ *    &ladder LADDER_OFF    OFF: всегда ACTIVE (для сравнения расхода)
+ *
+ *    Режим живёт в RAM: после перезагрузки снова AUTO.
+ *
+ * 3. ZMK Studio. Поведение попадает в прошивку ТОЛЬКО если .keymap его
+ *    упоминает (узел /omit-if-no-ref/, символ Kconfig идёт за
+ *    dt_compat_enabled). Пока в .keymap нет ни одного &ladder, в Studio его
+ *    тоже не будет — сначала пункт 2, потом Studio может двигать клавишу
+ *    куда угодно (в списке она под именем «Split Ladder»).
+ *
+ *    И: раскладка, сохранённая из Studio, лежит во флеше и перекрывает
+ *    .keymap для всех изменённых там клавиш. Если свежая &ladder ничего не
+ *    делает — либо назначить её и в Studio, либо сбросить раскладку в Studio
+ *    к стоковой.
+ */

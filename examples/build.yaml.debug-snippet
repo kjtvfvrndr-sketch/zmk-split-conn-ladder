@@ -1,0 +1,65 @@
+# Отладочная сборка правой половины: видно работу лестницы и повторной
+# отправки после пробуждения USB.
+# Без DBG не видны две строки, которые отличают «лестница сломалась»
+# от «сплит-линка просто нет».
+
+  - board: ergohaven
+    shield: k04_micro_right
+    keymap: k04_micro_ruen
+    snippet: "studio-rpc-usb-uart;zmk-usb-logging"
+    cmake-args: >-
+      -DCONFIG_ZMK_STUDIO=y
+      -DCONFIG_ZMK_LOGGING_MINIMAL=y
+      -DCONFIG_PMW3610_ALT_LOG_LEVEL_INF=y
+      -DCONFIG_ZMK_SPLIT_CONN_LADDER_LOG_LEVEL_DBG=y
+      -DCONFIG_THREAD_ANALYZER=y
+      -DCONFIG_THREAD_ANALYZER_AUTO=y
+      -DCONFIG_THREAD_ANALYZER_AUTO_INTERVAL=600
+      -DCONFIG_THREAD_NAME=y
+      -DCONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=3072
+      -DCONFIG_INPUT_THREAD_STACK_SIZE=1024
+      -DCONFIG_ZMK_LOW_PRIORITY_THREAD_STACK_SIZE=1024
+      -DCONFIG_ZMK_SPLIT_BLE_CENTRAL_SPLIT_RUN_STACK_SIZE=1024
+    artifact-name: k04_micro_right_debug
+
+# Стек лестницы здесь не задаётся: у неё своя очередь («split_conn_ladder» в
+# выводе THREAD_ANALYZER), и в сборке с логом модуль сам берёт 1536 вместо
+# 1024 — лог раздувает цепочку применения ступени с ~770 до ~1200 байт.
+#
+# ВАЖНО: эта сборка пишет лог по тому же кабелю, а на кабеле в режиме AUTO
+# лестница идёт по кабельным ступеням («ladder on cable steps ...»,
+# «step N/M on cable ...»). Чтобы увидеть батарейные — нажать
+# &ladder LADDER_TOG (в логе: «mode AUTO -> ON», «ladder on battery steps ...»).
+#
+# Отчёт левой о питании в логе правой: «other half reports USB power ...»
+# (раз на каждое соединение, примерно через 2 с после него), дальше
+# «other half: USB power ...» при изменениях. Левая, собранная с
+# CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER=y, пишет в свой лог
+# «USB power present|absent» — видно в её отладочной сборке без флагов.
+#
+# Строки повторной отправки (CONFIG_ZMK_USB_RESUME_RESEND=y) идут на уровне
+# INF и видны без флагов. Каждая отклонённая запись в эндпоинт вдобавок даёт
+# 11 строк «Failed to write endpoint buffer 0x81» от самого Zephyr (у стокового
+# ZMK так же). Если мешают — в cmake-args:
+#      -DCONFIG_USB_DEVICE_LOG_LEVEL_ERR=y
+#
+#   USB suspended: the host is asleep
+#   USB resumed after N s suspended -- a key change was dropped meanwhile
+#   host resumed N ms after a dropped report -- re-sending, a key is still held ...
+#   host reading again N ms after the wake -- in sync; K key changes meanwhile ...
+# Первые две — при каждом сне и пробуждении шины. «no key change was dropped»
+# значит, что будили трекболом, клавишей слоя (она в компьютер ничего не шлёт)
+# или сам Mac; клавиши сразу после пробуждения всё равно под присмотром, и
+# «host reading again» появится, только если какую-то пришлось дослать. Нет
+# строки «USB suspended» — шина не засыпала (например, погас только экран).
+# Второй, независимый от модуля свидетель — сам Zephyr: «usb_hid: Device
+# suspended» / «usb_hid: Device resumed» на каждый сон и пробуждение шины.
+# Нет и их — Mac не спал с точки зрения USB. Спал ли он вообще, покажет
+#   pmset -g log | grep -E "Entering Sleep|Wake from|Display is turned" | tail
+# Последняя — замер самого Mac: сколько он просыпался до первого чтения
+# клавиатуры и сколько нажатий пришлось на это окно (их доставить нельзя).
+
+# ── Опционально, для вопроса «сигнал или эфир» ──
+# Нужны ОБА символа, иначе контроллер ответит «unknown command».
+#      -DCONFIG_ZMK_SPLIT_CONN_LADDER_RSSI=y
+#      -DCONFIG_BT_CTLR_CONN_RSSI=y

@@ -1,0 +1,26 @@
+/*
+ * Copyright (c) 2026 eXidno
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * In the CENTRAL half's keymap:
+ *
+ *     #include <behaviors/split_conn_ladder.dtsi>
+ *     #include <dt-bindings/zmk/split_conn_ladder.h>
+ *     ...
+ *     &ladder LADDER_TOG
+ *
+ * omit-if-no-ref is safe here, unlike for behaviors that the central invokes
+ * by name on a peripheral: this one has central locality and never crosses the
+ * split link, so a keymap without &ladder simply does not get the node.
+ */
+
+/ {
+    behaviors {
+        /omit-if-no-ref/ ladder: ladder {
+            compatible = "zmk,behavior-split-conn-ladder";
+            #binding-cells = <1>;
+            display-name = "Split Ladder";
+        };
+    };
+};
