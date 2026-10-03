@@ -4,19 +4,20 @@
  * SPDX-License-Identifier: MIT
  *
  * Peripheral half: tells the central half whether this half is on USB power.
- * With both halves on USB there is nothing to save anywhere, and the ladder on
- * the central holds ACTIVE (peripheral_power_client.c reads this).
+ * While it is, the ladder on the central gives ACTIVE latency 0 -- this half
+ * has nothing to save -- and with both halves on USB it holds ACTIVE
+ * (peripheral_usb_power_report_client.c reads this).
  *
- * A peripheral half has no USB stack -- ZMK builds it without one -- so ZMK's
- * own "USB powered" test does not exist here. The nRF52840's VBUS detector
- * does not need one: the POWER peripheral reports VBUS whether or not USB is
- * in use. It is polled once a second; that is quick enough for a decision
- * nobody is waiting on, and a register read per second costs well under a
- * microamp.
+ * The nRF52840's VBUS detector is read directly: the POWER peripheral reports
+ * VBUS whether or not a USB stack is built in, and a peripheral half may be
+ * built without one. It is polled once a second; that is quick enough for a
+ * decision nobody is waiting on, and a register read per second costs well
+ * under a microamp.
  *
- * The report also carries this half's uptime. ZMK powers a sleeping half off
- * without closing the link, so to the central its sleep looks exactly like the
- * link failing; the uptime after the reconnect tells the two apart.
+ * The report also carries this half's uptime. A half that powers off without
+ * closing the link -- ZMK's sleep without PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP,
+ * a reset, a battery pulled -- looks to the central exactly like the link
+ * failing; the uptime after the reconnect tells the two apart.
  */
 
 #include <zephyr/kernel.h>
@@ -29,13 +30,13 @@
 
 #include <hal/nrf_power.h>
 
-#include "peripheral_power_gatt.h"
+#include "peripheral_usb_power_report_gatt.h"
 
-LOG_MODULE_REGISTER(zmk_split_conn_ladder_power,
-		    CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER_LOG_LEVEL);
+LOG_MODULE_REGISTER(zmk_split_conn_ladder_usb_power_report,
+		    CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT_LOG_LEVEL);
 
 #if !NRF_POWER_HAS_USBREG
-#error "ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER needs a SoC with a VBUS detector (nRF52840/nRF52833/nRF52820)"
+#error "ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT needs a SoC with a VBUS detector (nRF52840/nRF52833/nRF52820)"
 #endif
 
 #define POLL_MS 1000
@@ -49,7 +50,7 @@ static uint8_t vbus_now(void)
 	return nrf_power_usbregstatus_vbusdet_get(NRF_POWER) ? 1 : 0;
 }
 
-/* peripheral_power_gatt.h: flags, then the uptime in ms, saturating. */
+/* peripheral_usb_power_report_gatt.h: flags, then the uptime in ms, saturating. */
 static void fill_report(uint8_t report[LADDER_POWER_REPORT_LEN])
 {
 	const int64_t up = k_uptime_get();
@@ -75,7 +76,7 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 }
 
 /*
- * Laid out as peripheral_power_gatt.h promises: the CCC directly after the
+ * Laid out as peripheral_usb_power_report_gatt.h promises: the CCC directly after the
  * value. No encryption is demanded -- one bit of "is it charging" is nothing
  * to protect, and this way it cannot fail on a link that is still securing.
  */
@@ -109,7 +110,7 @@ static void poll_cb(struct k_work *work)
 	(void)k_work_schedule(&poll_work, K_MSEC(POLL_MS));
 }
 
-static int peripheral_power_init(void)
+static int usb_power_report_init(void)
 {
 	vbus = vbus_now();
 	LOG_INF("USB power %s at boot", vbus ? "present" : "absent");
@@ -117,4 +118,4 @@ static int peripheral_power_init(void)
 	return 0;
 }
 
-SYS_INIT(peripheral_power_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+SYS_INIT(usb_power_report_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

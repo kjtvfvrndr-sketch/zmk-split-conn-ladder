@@ -10,7 +10,7 @@
 
 /*
  * Mode values are LADDER_AUTO, LADDER_ON and LADDER_OFF. The mode lives in RAM
- * only: every boot starts from CONFIG_ZMK_SPLIT_CONN_LADDER_PAUSE_ON_USB.
+ * only: every boot starts from CONFIG_ZMK_SPLIT_CONN_LADDER_BOOT_IN_AUTO_MODE.
  */
 
 int split_conn_ladder_get_mode(void);

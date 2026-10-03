@@ -4,75 +4,78 @@ menuconfig ZMK_SPLIT_CONN_LADDER
 	bool "Step SPLIT-link connection parameters down while idle"
 	depends on ZMK_SPLIT_BLE && ZMK_SPLIT_ROLE_CENTRAL
 	help
-	  Runs on the CENTRAL half only and touches the SPLIT link only.
+	  For the CENTRAL half. Steps the split link's connection parameters
+	  down while the keyboard is idle and restores them at the next key,
+	  and with it, on this half: a low-power search for a missing other
+	  half (LOW_POWER_PERIPHERAL_SEARCH) and an early deep sleep when
+	  there is nothing to work for (EARLY_SLEEP).
 
-	  On the split link we are central, so a parameter update is in effect
-	  an order, applied at a Link Layer instant we pick: the peripheral's
-	  host could object only through a le_param_req callback, and ZMK
-	  registers none. The host link is deliberately left alone -- there we
-	  are peripheral and could only ask, and its own latency already puts
-	  it at roughly two connection events per second against ~67 for a
-	  15 ms split link.
+	  Names in these help texts leave out the ZMK_SPLIT_CONN_LADDER_
+	  prefix: STEP1_LATENCY is ZMK_SPLIT_CONN_LADDER_STEP1_LATENCY.
 
-	  ACTIVE parameters are NOT configured here. They are
-	  ZMK_SPLIT_BLE_PREF_INT / _LATENCY / _TIMEOUT -- the same values the
-	  link is created with, so the two cannot drift apart.
+	  On the split link this half is central, so a parameter update is in
+	  effect an order, applied at a Link Layer instant it picks: the
+	  peripheral's host could object only through a le_param_req
+	  callback, and ZMK registers none. The link to the computer is left
+	  alone -- there this half is peripheral and could only ask.
+
+	  The steps are computed by default (COMPUTED_STEPS), from a few
+	  budgets and the link to the computer; with it off they are the table
+	  STEP*_INTERVAL, STEP*_LATENCY and STEP*_SUPERVISION_TIMEOUT.
 
 	  Nothing outside this menu needs setting on this half. Steps are
 	  applied from a work queue of the module's own, sized automatically
-	  (see ZMK_SPLIT_CONN_LADDER_STACK_SIZE), so ZMK's low-priority queue
-	  and its stack are not involved. The one optional line for the other
-	  half is ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER, below this menu.
+	  (WORK_QUEUE_STACK_SIZE). The other half needs no line either: its
+	  report and its early sleep are on by default there.
 
 	  Supports one split peripheral (ZMK_SPLIT_BLE_CENTRAL_PERIPHERALS=1,
 	  ZMK's default); the build stops otherwise.
 
 if ZMK_SPLIT_CONN_LADDER
 
-config ZMK_SPLIT_CONN_LADDER_PAUSE_ON_USB
+config ZMK_SPLIT_CONN_LADDER_BOOT_IN_AUTO_MODE
 	bool "Boot in AUTO mode (the power source picks the steps)"
 	default y
 	help
 	  The mode the keyboard boots into:
 
 	    y  AUTO -- the power source decides (default):
-	              on battery    the battery steps (S*_INT/_LATENCY/_TIMEOUT)
-	              on USB power  the cable steps (S*_USB_*), see
-	                            ZMK_SPLIT_CONN_LADDER_USB_STEPS; ACTIVE when
-	                            that is off, or when the other half reports
-	                            USB power too
+	              on battery    the battery steps
+	              on USB power  the USB power steps, see USB_POWER_STEPS;
+	                            ACTIVE when that is off, or when the other
+	                            half reports USB power too
 	    n  ON   -- the battery steps whatever the power source
 
 	  "USB power" on this half is anything that makes ZMK itself refuse deep
-	  sleep: a host, awake or asleep, or a bare charger.
+	  sleep: a computer, awake or asleep, or a bare charger.
 
 	  The &ladder behavior (dts/behaviors/split_conn_ladder.dtsi) switches
 	  between AUTO, ON and OFF at run time. That choice lives in RAM only:
 	  every boot starts from this setting again.
 
-config ZMK_SPLIT_CONN_LADDER_USB_STEPS
-	bool "AUTO on USB power: cable steps instead of holding ACTIVE"
+config ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	bool "AUTO on USB power: USB power steps instead of holding ACTIVE"
 	default y
 	help
-	  On a cable this half has nothing to save, but the other half is
+	  On USB power this half has nothing to save, but the other half is
 	  still on its battery, and only latency saves it anything. So in AUTO
 	  mode with USB power the same steps, on the same timers, switch to a
-	  second parameter set -- S*_USB_INT/_LATENCY/_TIMEOUT -- which keeps
-	  the ACTIVE interval and raises only the latency. Keys from the other
-	  half are not delayed by that: a peripheral with something to send
+	  second parameter set, the USB power steps (STEP*_USB_POWER_*):
+	  ACTIVE's interval with a higher latency. Keys from the other half
+	  are not delayed by that: a peripheral with something to send
 	  transmits at the very next connection event whatever its latency.
 	  What waits is traffic TO it (the LED/indicator sync), up to
 	  interval * (latency + 1).
 
 	  Plugging in keeps the current step and swaps its parameters.
-	  Unplugging returns to ACTIVE and restarts the idle clock, as always.
+	  Unplugging returns to ACTIVE and restarts the idle clock.
 
-	  If the other half reports USB power as well -- it needs
-	  ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER=y in ITS .conf -- there is
-	  nothing to save anywhere, and the ladder holds ACTIVE. Without that
-	  report the other half counts as on battery.
+	  When the other half reports USB power as well, there is nothing to
+	  save anywhere and the ladder holds ACTIVE. The report is on by
+	  default on the other half (PERIPHERAL_USB_POWER_REPORT); a half
+	  built without it counts as on battery.
 
-	  n restores the old behaviour: AUTO on USB power holds ACTIVE.
+	  n: AUTO on USB power holds ACTIVE.
 
 config ZMK_BEHAVIOR_SPLIT_CONN_LADDER
 	bool
@@ -82,71 +85,247 @@ config ZMK_BEHAVIOR_SPLIT_CONN_LADDER
 	  -- and do not: it has no prompt, and Zephyr stops the build when a
 	  .conf assigns a symbol without one.
 
-config ZMK_SPLIT_CONN_LADDER_STACK_SIZE
+config ZMK_SPLIT_CONN_LADDER_WORK_QUEUE_STACK_SIZE
 	int "Stack of the ladder's work queue (bytes)"
-	default 1536 if LOG
-	default 1024
+	default 2048 if LOG
+	default 1280
 	help
-	  Sized for applying a step, which ends in a blocking HCI command:
-	  measured at about 770 bytes, 1200 when logging is on (every LOG_*
-	  call packs its arguments on the stack, and the Bluetooth host logs
-	  from inside that command). The defaults leave room; there is no
-	  reason to set this. The build stops if it is set below them.
+	  Sized for the deepest things this queue runs, measured on real
+	  builds: applying a step, which ends in a blocking HCI command, about
+	  800 bytes; with logging (every LOG_* call packs its arguments on the
+	  stack, and the Bluetooth host logs from inside that command) printing
+	  the computed table, about 1340, and up to 1556 should a connection be
+	  released inside that walk. An interrupt adds up to 104 bytes on top.
+	  The low-power search's scan start and stop, and the other half's
+	  report, run here too and need less. The defaults leave about 340
+	  to 390 bytes spare; there is no reason to set this. The build
+	  stops if it is set below them.
 
-config ZMK_SPLIT_CONN_LADDER_THREAD_PRIORITY
+config ZMK_SPLIT_CONN_LADDER_WORK_QUEUE_PRIORITY
 	int "Priority of the ladder's work queue thread"
 	default 10
 	help
 	  Preemptible and low, the same as ZMK's own low-priority queue: a
 	  step change is never urgent against key processing.
 
-config ZMK_SPLIT_CONN_LADDER_STEPS
+config ZMK_SPLIT_CONN_LADDER_STEP_COUNT
 	int "Number of idle steps"
-	range 1 4
-	default 3
+	range 1 6
+	default 4
 	help
-	  How many of the four steps below are compiled in. Steps numbered
-	  above this count are ignored entirely -- not built, not checked --
-	  so leaving their values at the defaults is harmless. With the
-	  default 3, S4_* does nothing.
+	  How many steps are built, up to six. Steps numbered above this
+	  count are ignored entirely -- not built, not checked -- so leaving
+	  their values at the defaults is harmless.
 
-	  The default steps are tuned so that coming back from any of them
-	  takes about the same ~1.5 s, rather than to a power target: the
-	  interval carries the saving, the latency only decides how long the
-	  return takes and how much the peripheral saves. With ZMK_SPLIT_CONN_
-	  LADDER_BACKOFF on, a depth that does not hold on your hardware is
-	  found and abandoned on its own, so there is little reason to start
-	  shallow.
+	  Four steps on the default timers begin 0, 3, 10 and 20 minutes into
+	  idle. The deepest, 398.75 ms at latency 0, costs the central half
+	  about 60 uA and the other half about 30 uA, and comes back in about
+	  3 s, where waking from sleep takes a reboot and a reconnect: README,
+	  "Step 4 instead of sleep".
 
-config ZMK_SPLIT_CONN_LADDER_MIN_WINDOWS
+config ZMK_SPLIT_CONN_LADDER_MIN_SUPERVISION_WINDOWS
 	int "Minimum supervision windows demanded of every step"
 	range 2 40
 	default 6
 	help
 	  How many peripheral attendance periods the supervision timeout must
-	  cover, checked at build time for every step and for ACTIVE. This is
-	  how many of the peripheral's scheduled wake-ups may be missed before
-	  the link is declared dead.
+	  cover, checked for every step and for ACTIVE. This is how many of
+	  the peripheral's scheduled wake-ups may be missed before the link is
+	  declared dead.
 
 	  Bluetooth itself permits as low as 2, which is not survivable on a
 	  board running the nRF52840 internal RC oscillator. It also stops a
-	  deep step from quietly becoming more fragile than a shallow one:
-	  raise an interval without lowering the latency to match and the
-	  build fails instead of the link.
+	  deep step from quietly becoming more fragile than a shallow one.
 
-config ZMK_SPLIT_CONN_LADDER_MAX_SWITCH_MS
+config ZMK_SPLIT_CONN_LADDER_MAX_RETURN_MS
 	int "Longest permitted return from any step (ms)"
 	range 500 20000
 	default 4000
 	help
 	  Leaving a step costs interval * (3 * latency + 8), and for that whole
 	  time every keystroke from the peripheral half is still delayed by a
-	  full interval. This caps it at build time for every step.
+	  full interval. This is the hard ceiling for every step, table or
+	  computed, USB power ones included; the computed steps have tighter
+	  budgets of their own (RETURN_BUDGET_MS,
+	  DEEPEST_STEP_RETURN_BUDGET_MS).
 
-	  4 s leaves room for a deliberately deep pre-sleep step at 400 ms, and
-	  refuses 800 ms, where the return alone runs past six seconds.
+config ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	bool "Compute the steps (off: take them from the table)"
+	default y
+	help
+	  On (the default), the ladder works the parameters out itself, and
+	  works them out again whenever the link to the computer, the output
+	  or the other half's power changes:
 
-config ZMK_SPLIT_CONN_LADDER_SETTLE_MS
+	    ACTIVE   ACTIVE_DEFAULT_INTERVAL (16.25 ms) -- or, with a pointer
+	             whose motion goes to the computer over Bluetooth, an
+	             interval that keeps out of the host link's way: below it,
+	             sharing a factor and not dividing it, not below 12.5 ms
+	             (12.5 ms against a Mac's 15 ms), otherwise above it with
+	             no common factor (16.25 ms against a PC's 7.5 ms). With
+	             the output on USB, 8.75 ms. The latency makes what the
+	             other half is sent wait about
+	             ACTIVE_PERIPHERAL_SYNC_DELAY_MS, and is 0 when the other
+	             half reports USB power.
+	    step k   a latency from a fixed series (STEP<k>_LATENCY sets it),
+	             and the longest interval that still returns to ACTIVE
+	             within the step's budget -- RETURN_BUDGET_MS, or
+	             DEEPEST_STEP_RETURN_BUDGET_MS for the deepest -- keeps
+	             MIN_SUPERVISION_WINDOWS attendances inside the timeout,
+	             and shares no factor with 2, 3 or the host link's
+	             interval.
+	    step k   ACTIVE's interval, which delays no key; the latency rises
+	    on USB   in equal steps from ACTIVE's to the one that makes the
+	    power    other half's sync delay USB_POWER_PERIPHERAL_SYNC_DELAY_MS.
+
+	  With the defaults and four steps: 31.25 ms at latency 13, 83.75 ms
+	  at 3, 136.25 ms at 1, 398.75 ms at 0 -- returns of 1.47, 1.42, 1.50
+	  and 3.19 s.
+
+	  Any step can be set by hand: STEP*_LATENCY, STEP*_INTERVAL,
+	  STEP*_SUPERVISION_TIMEOUT and, for USB power,
+	  STEP*_USB_POWER_LATENCY and STEP*_USB_POWER_SUPERVISION_TIMEOUT
+	  default to -1 or 0, "computed", in this mode -- see STEP1_INTERVAL.
+	  The log prints the whole table at every recompute ("steps computed
+	  ...").
+
+	  Off, the steps are the table -- STEP*_INTERVAL, STEP*_LATENCY,
+	  STEP*_SUPERVISION_TIMEOUT and STEP*_USB_POWER_* -- and ACTIVE is
+	  ZMK_SPLIT_BLE_PREF_INT/_LATENCY/_TIMEOUT.
+
+if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+
+config ZMK_SPLIT_CONN_LADDER_ACTIVE_AVOIDS_HOST_INTERVAL
+	bool "A trackball or other pointer sends through this keyboard"
+	default y if ZMK_POINTING
+	help
+	  Whether ACTIVE is chosen against the link to the computer. Motion
+	  reaches the computer over this half's host link whichever half the
+	  sensor is on, and a split interval whose events keep landing on
+	  that link's shows up as a cursor that stutters. Without a pointer
+	  the collisions only cost a key a few milliseconds now and then, and
+	  ACTIVE stays ACTIVE_DEFAULT_INTERVAL.
+
+	  n is also the way to keep ACTIVE at ACTIVE_DEFAULT_INTERVAL on a
+	  Mac, where the choice against its 15 ms link is 12.5 ms.
+
+	  Follows ZMK_POINTING, which a trackball half turns on.
+
+config ZMK_SPLIT_CONN_LADDER_ACTIVE_DEFAULT_INTERVAL
+	int "ACTIVE interval without a host link to avoid (1.25 ms units)"
+	range 6 16
+	default 13
+	help
+	  The split interval while typing, when no host link is there to keep
+	  out of the way of -- no pointer, no Bluetooth host, nothing that
+	  fits (see COMPUTED_STEPS). 13 is 16.25 ms: shares no factor with a
+	  PC's 7.5 ms or a Mac's 15 ms link. With the output on USB ACTIVE is
+	  8.75 ms whatever this says.
+
+	  16 (20 ms) at most: the steps must stay longer than any ACTIVE.
+
+config ZMK_SPLIT_CONN_LADDER_PERIPHERAL_SHOWS_INDICATORS
+	bool "The other half shows what this half sends it (LED, layer colour)"
+	default y if RGBLED_WIDGET_LAYER_PUSH || ZMK_SPLIT_PERIPHERAL_HID_INDICATORS
+	help
+	  Sets the default of ACTIVE_PERIPHERAL_SYNC_DELAY_MS: about 160 ms
+	  while typing when the other half has something to show -- a layer
+	  colour pushed by zmk-rgbled-widget, the host's caps-lock -- and
+	  400 ms when it has not. On by itself with RGBLED_WIDGET_LAYER_PUSH or
+	  ZMK_SPLIT_PERIPHERAL_HID_INDICATORS.
+
+config ZMK_SPLIT_CONN_LADDER_ACTIVE_PERIPHERAL_SYNC_DELAY_MS
+	int "ACTIVE: how long what the other half is sent may wait (ms)"
+	range 0 5000
+	default 163 if ZMK_SPLIT_CONN_LADDER_PERIPHERAL_SHOWS_INDICATORS
+	default 400
+	help
+	  ACTIVE's latency is picked so that the other half's attendance,
+	  interval * (latency + 1), comes nearest this: the delay of an LED
+	  or layer push while typing. Keys from the other half are not
+	  delayed by latency. 163 gives 162.5 ms on the 16.25 ms and 12.5 ms
+	  intervals; 400 gives 406, 400 and 400 ms on 16.25, 12.5 and 20 ms.
+	  When the other half reports USB power the latency is 0.
+
+	  Must not exceed USB_POWER_PERIPHERAL_SYNC_DELAY_MS, where the USB
+	  power steps end.
+
+config ZMK_SPLIT_CONN_LADDER_RETURN_BUDGET_MS
+	int "Return budget from every step but the deepest (ms)"
+	range 500 20000
+	default 1500
+	help
+	  How long coming back from a step to ACTIVE may take. For that whole
+	  time the other half's keys still wait up to a full step interval.
+	  Every step gets the longest interval that returns within it at the
+	  step's latency, so a deeper step -- a lower latency -- gets a longer
+	  interval and saves more, and is no slower to leave.
+
+	  Below about 1000 ms the series' first latency, 13, leaves step 1
+	  nothing longer than 20 ms, and the build stops asking for a lower
+	  STEP1_LATENCY.
+
+config ZMK_SPLIT_CONN_LADDER_DEEPEST_STEP_RETURN_BUDGET_MS
+	int "Return budget from the deepest step (ms, 0: RETURN_BUDGET_MS)"
+	range 0 20000
+	default 3200
+	help
+	  The deepest step may take longer to leave: 3200 lets it reach
+	  398.75 ms at latency 0, the step that stands in for sleep. 0 gives
+	  it RETURN_BUDGET_MS like the others. Must not be below
+	  RETURN_BUDGET_MS nor above MAX_RETURN_MS.
+
+	  It also picks the latency series: with a deepest budget of its own
+	  the deepest step is latency 0 and the others take the series of one
+	  step fewer (four steps: 13, 3, 1, then 0), with 0 all steps share
+	  one series (four steps: 13, 3, 1, 0) -- STEP1_LATENCY lists them.
+
+config ZMK_SPLIT_CONN_LADDER_STEPS_SUPERVISION_TIMEOUT
+	int "Supervision timeout of every computed step (10 ms units)"
+	range 100 3200
+	default 800
+	help
+	  With MIN_SUPERVISION_WINDOWS this caps each step's interval at its
+	  latency: the timeout must cover that many attendances. A step's own
+	  STEP*_SUPERVISION_TIMEOUT replaces it for that step. ACTIVE has its
+	  own, ACTIVE_SUPERVISION_TIMEOUT.
+
+config ZMK_SPLIT_CONN_LADDER_ACTIVE_SUPERVISION_TIMEOUT
+	int "Supervision timeout of ACTIVE (10 ms units)"
+	range 100 3200
+	default 400
+	help
+	  How long the halves go without hearing each other at ACTIVE before
+	  the link is declared lost. ACTIVE's attendance is short -- 163 ms
+	  with PERIPHERAL_SHOWS_INDICATORS, about 400 ms without -- so 4 s,
+	  ZMK's own default, still covers about ten to twenty-four of them. Shorter
+	  than the steps' on purpose: until the link is declared lost this
+	  half does not know the other one has gone, and anything it sends
+	  that way meanwhile waits in the Bluetooth buffers it shares with the
+	  reports to the computer. The latency is lowered, if need be, to keep
+	  MIN_SUPERVISION_WINDOWS in it.
+
+config ZMK_SPLIT_CONN_LADDER_USB_POWER_PERIPHERAL_SYNC_DELAY_MS
+	int "On USB power: longest delay of what the other half is sent (ms)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 10000
+	default 625
+	help
+	  The USB power steps keep ACTIVE's interval, so a key from the other
+	  half is never delayed; they raise only the latency, and all that
+	  costs is how long something sent TO the other half waits -- the
+	  LED/layer push -- which is interval * (latency + 1). The latency
+	  rises in equal steps from ACTIVE's to the one that makes this delay,
+	  reached at the deepest step: on 16.25 ms and four steps, 16, 23, 30,
+	  37 -- 276, 390, 504 and 617.5 ms -- with PERIPHERAL_SHOWS_INDICATORS
+	  (ACTIVE at latency 9); without it, from latency 24: 27, 30, 33, 37. Leaving a USB power step delays no
+	  key either, so the return budgets do not apply to them;
+	  MIN_SUPERVISION_WINDOWS and MAX_RETURN_MS do. 0 keeps every USB
+	  power step at ACTIVE.
+
+endif # ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+
+config ZMK_SPLIT_CONN_LADDER_NEW_LINK_SETTLE_MS
 	int "Delay before re-applying a step to a freshly connected link (ms)"
 	range 0 30000
 	default 3000
@@ -154,17 +333,14 @@ config ZMK_SPLIT_CONN_LADDER_SETTLE_MS
 	  How long the ladder keeps its hands off a split link that has just
 	  connected. In those first seconds ZMK sets the link up -- encryption,
 	  GATT discovery, subscriptions -- and a parameter update would only
-	  queue behind that. (Zephyr's automatic parameter update does not
-	  apply here: it runs only where this half is peripheral, i.e. on the
-	  host link.)
+	  queue behind that.
 
 	  No step is applied in that window, whatever wakes the ladder -- a
-	  key, a cable, the &ladder key, the other half's power report. With
-	  the default S1_AFTER_MS this hardly matters, because a new link
-	  restarts the idle clock and the first step is a minute away anyway.
-	  It is what protects the link when S1_AFTER_MS is shorter than this.
+	  key, a cable, the &ladder key, the other half's power report. That
+	  is what protects the link with STEP1_AFTER_IDLE_MS at 0, the
+	  default.
 
-config ZMK_SPLIT_CONN_LADDER_RETRY_MS
+config ZMK_SPLIT_CONN_LADDER_REJECTED_UPDATE_RETRY_MS
 	int "Retry delay after a rejected parameter update (ms)"
 	range 50 5000
 	default 500
@@ -174,12 +350,12 @@ config ZMK_SPLIT_CONN_LADDER_RETRY_MS
 	  Layer procedures rather than refusing a second one, so a refusal is
 	  rare and short-lived: -105 (ENOBUFS, no free HCI command buffer) or
 	  -5 (EIO, the controller had no free procedure context). Each further
-	  refusal in a row doubles the wait, up to UPDATE_TIMEOUT_MS; the first
+	  refusal in a row doubles the wait, up to
+	  UNCONFIRMED_UPDATE_TIMEOUT_MS; the first
 	  accepted update resets it. Restoring ACTIVE retries on the same
-	  schedule, so this also bounds how late a return can be when the
-	  controller refuses at that moment.
+	  schedule.
 
-config ZMK_SPLIT_CONN_LADDER_UPDATE_TIMEOUT_MS
+config ZMK_SPLIT_CONN_LADDER_UNCONFIRMED_UPDATE_TIMEOUT_MS
 	int "How long an unconfirmed parameter update blocks a deeper step (ms)"
 	range 1000 60000
 	default 15000
@@ -188,9 +364,11 @@ config ZMK_SPLIT_CONN_LADDER_UPDATE_TIMEOUT_MS
 	  peripheral never has to process two Link Layer instants back to
 	  back. If the confirmation is lost, this is when we stop waiting.
 	  Restoring ACTIVE never waits -- coming back up is urgent, and the
-	  controller queues that procedure rather than refusing it.
+	  controller queues that procedure rather than refusing it. Must exceed
+	  MAX_RETURN_MS, the longest a step may take to leave; the build stops
+	  otherwise.
 
-config ZMK_SPLIT_CONN_LADDER_BACKOFF
+config ZMK_SPLIT_CONN_LADDER_BACKOFF_AFTER_LINK_LOSS
 	bool "Reduce ladder depth after a split link loss"
 	default y
 	help
@@ -199,60 +377,141 @@ config ZMK_SPLIT_CONN_LADDER_BACKOFF
 	  depth forever, cap the ladder one step shallower and hand the notch
 	  back once the link has proven stable. Neighbouring steps with the
 	  same parameters count as one step here, and the battery and the
-	  cable steps are capped separately. Without this, a link that
-	  cannot survive the deepest step reconnects and dies in a loop, which
-	  looks from the outside like a half that never comes back.
+	  USB power steps are capped separately.
 
-config ZMK_SPLIT_CONN_LADDER_STABLE_MS
+config ZMK_SPLIT_CONN_LADDER_BACKOFF_RESTORE_AFTER_MS
 	int "Continuous connection time before one depth notch is restored (ms)"
-	depends on ZMK_SPLIT_CONN_LADDER_BACKOFF
+	depends on ZMK_SPLIT_CONN_LADDER_BACKOFF_AFTER_LINK_LOSS
 	range 60000 21600000
 	default 900000
 	help
-	  Doubled on each further failure, up to 32x, so a depth that keeps
-	  failing stops being retried within a few hours instead of costing a
-	  dropped link every time this elapses.
+	  Doubled on each further failure, up to 32x and never beyond a week,
+	  so a depth that keeps failing stops being retried within a few hours
+	  instead of costing a dropped link every time this elapses.
 
-config ZMK_SPLIT_CONN_LADDER_BACKOFF_CONFIRM_MS
+config ZMK_SPLIT_CONN_LADDER_BACKOFF_RECONNECT_WINDOW_MS
 	int "Reconnect window that confirms a loss was a step failure (ms)"
-	depends on ZMK_SPLIT_CONN_LADDER_BACKOFF
+	depends on ZMK_SPLIT_CONN_LADDER_BACKOFF_AFTER_LINK_LOSS
 	range 5000 600000
 	default 60000
 	help
 	  A disconnect alone does not prove the step was too deep: the other
-	  half also drops the link when it enters its own deep sleep -- ZMK
-	  powers it off without closing the link, so from here it looks
+	  half also drops the link when it goes to sleep. With
+	  PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP there it closes the link first,
+	  and a closed link is never judged. Without it -- and on a reset or
+	  a pulled battery -- the link just stops, which from here looks
 	  exactly like a supervision timeout. A half that lost the link over
-	  parameters is awake and advertising, so it returns within seconds; a
-	  half that powered itself off stays away until a key is pressed on
-	  it. A loss is only counted against the ladder if the link comes back
-	  inside this window.
+	  parameters is awake and advertising, so it returns within seconds;
+	  a half that powered itself off stays away until a key is pressed on
+	  it. A loss is only counted against the ladder if the link comes
+	  back inside this window -- and, with the other half's report, only
+	  if that half did not restart meanwhile, whatever the timing.
 
-	  That alone is fooled by a key pressed soon after the other half fell
-	  asleep. With the other half's report
-	  (ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER in its .conf) the ladder
-	  also knows that half's uptime after the reconnect, and a loss during
-	  which it restarted is never counted, whatever the timing.
-
-config ZMK_SPLIT_CONN_LADDER_RSSI
+config ZMK_SPLIT_CONN_LADDER_LOG_RSSI
 	bool "Log split link RSSI on every step change"
 	default n
 	help
 	  Answers the question connection parameters cannot: when a step
 	  fails, is the signal weak or is the band merely busy? A split link
-	  across a desk should sit around -40..-60 dBm; if it does and steps
+	  across a desk should sit around -40..-65 dBm; if it does and steps
 	  still fail, the losses are congestion, and channel classification is
 	  the lever rather than anything here.
 
 	  Needs CONFIG_BT_CTLR_CONN_RSSI=y, which ZMK leaves off, or the
-	  controller answers "unknown command". Diagnostic only -- leave it
-	  off for normal use.
+	  controller answers "unknown command". Diagnostic only.
+
+config ZMK_SPLIT_CONN_LADDER_LOW_POWER_PERIPHERAL_SEARCH
+	bool "Low-power search for the other half once it has been gone a while"
+	default y
+	help
+	  ZMK searches for a missing other half with half the radio's time
+	  -- a 30 ms scan window every 60 ms, about 2.5 mA -- for as long as
+	  it is missing: all night, when that half is asleep or switched off.
+
+	  With this on, ZMK searches like that -- or the module's middle
+	  search instead, below -- for ABSENCE_WAIT_MS after the other half
+	  disappears (or after boot); then the module switches ZMK's search
+	  off and listens itself for 30 ms every 1.28 s, about 0.1 mA. When it hears the other half -- a waking half calls for
+	  1.28 s at full rate, so one window catches it -- ZMK's full search
+	  comes back and connects. What wakes it:
+
+	    - directed advertising, which a half sends only to the central it
+	      is paired with -- the radio drops any addressed elsewhere;
+	    - a ZMK split half advertising for pairing, if it is the half
+	      this one is paired with (a half that lost its pairing keeps its
+	      address), or if this half has no paired half yet.
+
+	  A call that does not end in a connection counts as a loss at that
+	  moment: ABSENCE_WAIT_MS more, then the low-power search again.
+
+	  The full search stays on only while the keys go to a USB host:
+	  there it costs no battery, and no Bluetooth link to a computer
+	  carries the output for it to take airtime from. USB power alone
+	  changes nothing: on a charger, or on a computer's cable with the
+	  keys on Bluetooth, the search goes as on battery.
+
+	  While the keys go to a Bluetooth host, the first ABSENCE_WAIT_MS
+	  are not ZMK's full search but a middle one of the module's own
+	  (MIDDLE_PERIPHERAL_SEARCH_INTERVAL_MS): the full search takes half
+	  the radio, and the host link loses events to it -- a trackball
+	  stutters.
+
+config ZMK_SPLIT_CONN_LADDER_MIDDLE_PERIPHERAL_SEARCH_INTERVAL_MS
+	int "Middle search: listen every this many ms while the keys go to a Bluetooth host (0: off)"
+	depends on ZMK_SPLIT_CONN_LADDER_LOW_POWER_PERIPHERAL_SEARCH
+	range 0 1280
+	default 240
+	help
+	  The middle search: for the first ABSENCE_WAIT_MS after the other
+	  half goes, while the keys go to a connected Bluetooth host, the
+	  module listens 30 ms every this many ms instead of ZMK's full
+	  search (30 ms every 60 ms). At 240 ms that is an eighth of the
+	  radio's time instead of half: the host link loses far fewer events,
+	  and the search draws about 0.6 mA instead of 2.5 mA.
+
+	  It cannot miss the other half, only hear it a little later: a half
+	  that has just woken calls at full rate for 1.28 s, which the first
+	  window catches -- within this interval; after that it calls every
+	  100-150 ms, which a 30 ms window catches about one time in four --
+	  within about four intervals on average. Hearing it, the module
+	  switches ZMK's full search on for 2 s, which connects.
+
+	  With the keys on USB, or with no Bluetooth host connected, ZMK's
+	  full search runs instead: there it takes nothing from a host link.
+	  After ABSENCE_WAIT_MS the low-power search follows either way.
+
+	  0 turns the middle search off: ZMK's full search for the first
+	  ABSENCE_WAIT_MS in every case. Other values below 60 stop the build
+	  -- 60 ms is the full search itself.
+
+config ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP_WITHOUT_PERIPHERAL
+	bool "Sleep early without the other half, even with a computer"
+	depends on ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP && ZMK_SPLIT_ROLE_CENTRAL
+	default n
+	help
+	  For a keyboard that is no use without its other half. With this on,
+	  this half also goes to sleep after ABSENCE_WAIT_MS of idle without
+	  the other half -- while a computer is connected too -- unless it is on
+	  USB power with a computer there. A key or the trackball wakes it.
+
+config ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP_BLE_PAIRING_WAIT_MS
+	int "Early sleep while the active BLE profile waits for a computer to pair (ms)"
+	depends on ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP && ZMK_SPLIT_ROLE_CENTRAL
+	range 10000 3600000
+	default 180000
+	help
+	  While the active Bluetooth profile has no computer paired to it,
+	  the keyboard is waiting for one to pair, and the early sleep waits
+	  this long instead of ABSENCE_WAIT_MS, whatever the reason to sleep.
+	  A computer that connects to pair starts the count again.
+	  Must not be below ABSENCE_WAIT_MS nor below the settings-save
+	  formula (see ABSENCE_WAIT_MS).
 
 #
 # Units are Bluetooth units, not milliseconds:
-#   interval -- 1.25 ms steps:  10 = 12.5 ms    25 = 31.25 ms
-#                               49 = 61.25 ms   97 = 121.25 ms   319 = 398.75 ms
-#   timeout  -- 10 ms steps:   400 = 4 s    600 = 6 s     800 = 8 s
+#   interval -- 1.25 ms steps:  13 = 16.25 ms   25 = 31.25 ms   67 = 83.75 ms
+#                               109 = 136.25 ms 319 = 398.75 ms
+#   timeout  -- 10 ms steps:   400 = 4 s    800 = 8 s
 #   latency  -- a plain count of connection events
 #
 # Derived quantities, all in milliseconds:
@@ -260,184 +519,437 @@ config ZMK_SPLIT_CONN_LADDER_RSSI
 #                                   = interval * (latency + 1) * 1.25
 #   leaving a step (any direction)  = interval * (3 * latency + 8) * 1.25
 #                                     -- of the step being LEFT
-#   first left-hand key after a step= interval * 1.25 (worst case)
+#   first key from the other half after a step = interval * 1.25 (worst case)
 #
 # Hard requirement, checked at build time and by Zephyr at runtime:
 #   timeout * 4 > (1 + latency) * interval
 #
-# Every step has two parameter sets on one timer (S*_AFTER_MS): the battery
-# set, S*_INT/_LATENCY/_TIMEOUT, and the cable set, S*_USB_*, used in AUTO
-# mode on USB power (ZMK_SPLIT_CONN_LADDER_USB_STEPS). The cable set defaults
-# to the ACTIVE interval, so it delays no key, not even while the link is
-# switching back; its latency buys the other half's battery:
-#   S1/S2 latency 29 at 12.5 ms: on air every 375 ms (ACTIVE at lat 12: 162 ms)
-#   S3/S4 latency 49 at 12.5 ms: on air every 625 ms
-# All the build-time checks apply to both sets.
+# Every step has two parameter sets on one timer (STEP*_AFTER_IDLE_MS): the
+# battery set, STEP*_INTERVAL, STEP*_LATENCY and STEP*_SUPERVISION_TIMEOUT,
+# and the USB power set, STEP*_USB_POWER_*, used in AUTO mode on USB power
+# (USB_POWER_STEPS). Names leave out the ZMK_SPLIT_CONN_LADDER_ prefix.
 #
-# The step intervals below are deliberately not round numbers: 25, 49, 97 and
-# 319 units share no factor with the 12 units (15 ms) a Mac gives its own
-# link, nor with the 6 (7.5 ms) a PC does. A central half with a link to a
-# computer of its own runs both links on one radio, and an interval that is a
-# multiple of the computer's parks the two schedules on top of each other for
-# as long as the clocks take to drift apart -- see "The interval and the
-# computer's own link" in the README.
+# With COMPUTED_STEPS (the default) the parameter symbols default to 0
+# (interval, timeout) and -1 (latency) -- "computed" -- and a value set here
+# sets that one thing for that step: see STEP1_INTERVAL, STEP1_LATENCY.
+# Without it they are the table. Its battery steps default to what the
+# computation gives with no computer in the way: 25/13, 67/3, 109/1 and
+# 319/0, steps 5 and 6 repeating step 4. Its USB power steps run
+# ZMK_SPLIT_BLE_PREF_INT at latency 29 (steps 1, 2) and 49 (steps 3 to 6),
+# which suits PREF 10/12/600; with ZMK's own PREF_LATENCY of 30, steps 1 and
+# 2 are shallower than ACTIVE (README, "The table").
+#
+# The step intervals are deliberately not round numbers: 25, 67, 109 and 319
+# share no factor with the 12 units (15 ms) a Mac gives its own link, nor
+# with the 6 (7.5 ms) a PC does. A central half with a link to a computer of
+# its own runs both links on one radio, and an interval that is a multiple of
+# the computer's parks the two schedules on top of each other for as long as
+# the clocks take to drift apart -- README, "The interval and the computer's
+# own link".
 #
 
-config ZMK_SPLIT_CONN_LADDER_S1_AFTER_MS
+config ZMK_SPLIT_CONN_LADDER_STEP1_AFTER_IDLE_MS
 	int "Step 1: delay after entering idle (ms)"
-	range 0 3600000
-	default 60000
+	range 0 86400000
+	default 0
 	help
-	  Hysteresis before the ladder starts moving. Idle gaps shorter than
-	  ZMK_IDLE_TIMEOUT plus this value cost zero parameter updates, so
-	  bursty typing never pays a ramp-up. 0 starts stepping down at once.
+	  How long after entering idle the step begins. 0, the default,
+	  begins at once: ZMK_IDLE_TIMEOUT (30 s without a key) is the
+	  hysteresis, and short pauses in typing cost no parameter update.
 
-config ZMK_SPLIT_CONN_LADDER_S1_INT
+config ZMK_SPLIT_CONN_LADDER_STEP1_INTERVAL
 	int "Step 1: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 25
+	help
+	  Computed mode (COMPUTED_STEPS): 0, the default there, computes the
+	  interval -- the longest that returns within the step's budget at its
+	  latency and keeps MIN_SUPERVISION_WINDOWS inside its timeout, on a
+	  number that shares no factor with 2, 3 or the host link's interval.
+	  Any other value sets it: the step runs exactly this interval, at
+	  STEP1_LATENCY or the series latency, and the build checks it --
+	  within the step's budget, MIN_SUPERVISION_WINDOWS and the Bluetooth
+	  rule, at least 17
+	  (20 ms is the longest ACTIVE), and not shallower than the step above
+	  (a step that repeats the one above only draws a warning).
 
-config ZMK_SPLIT_CONN_LADDER_S1_LATENCY
+	  Table mode: the step's interval.
+
+config ZMK_SPLIT_CONN_LADDER_STEP1_LATENCY
 	int "Step 1: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
-	default 14
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 13
+	help
+	  Computed mode: -1, the default there, takes the series latency for
+	  this step, by the number of steps and whether the deepest has a
+	  budget of its own (DEEPEST_STEP_RETURN_BUDGET_MS):
 
-config ZMK_SPLIT_CONN_LADDER_S1_TIMEOUT
+	               a budget of its own    DEEPEST_STEP_RETURN_BUDGET_MS=0
+	    1 step     0                      13
+	    2 steps    13, 0                  13, 3
+	    3 steps    13, 3, 0               13, 3, 1
+	    4 steps    13, 3, 1, 0            13, 3, 1, 0
+	    5 steps    13, 3, 1, 0, 0         13, 5, 3, 1, 0
+	    6 steps    13, 5, 3, 1, 0, 0      13, 7, 5, 3, 1, 0
+
+	  A value sets the latency, and the interval is computed for it
+	  (unless STEP1_INTERVAL sets that too). The build stops if nothing
+	  longer than 20 ms returns within the step's budget at this latency:
+	  at most 20 with a 1500 ms budget, 47 with 3200 ms.
+
+	  Table mode: the step's latency.
+
+config ZMK_SPLIT_CONN_LADDER_STEP1_SUPERVISION_TIMEOUT
 	int "Step 1: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  Computed mode: 0, the default there, takes STEPS_SUPERVISION_TIMEOUT.
+	  Table mode: the step's timeout.
 
-config ZMK_SPLIT_CONN_LADDER_S1_USB_INT
+config ZMK_SPLIT_CONN_LADDER_STEP1_USB_POWER_INTERVAL
 	int "Step 1 on USB power: connection interval (1.25 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
 	default ZMK_SPLIT_BLE_PREF_INT
 
-config ZMK_SPLIT_CONN_LADDER_S1_USB_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP1_USB_POWER_LATENCY
 	int "Step 1 on USB power: peripheral latency (events)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 29
+	help
+	  Computed mode: -1, the default there, puts the step on the ramp
+	  from ACTIVE's latency to the one USB_POWER_PERIPHERAL_SYNC_DELAY_MS
+	  gives, and a value sets it: the other computed USB power steps then
+	  lie on straight lines through it. Checked at build time on
+	  ACTIVE_DEFAULT_INTERVAL, and held to MIN_SUPERVISION_WINDOWS and
+	  MAX_RETURN_MS at run time when ACTIVE is longer.
+	  Table mode: the USB power step's latency.
 
-config ZMK_SPLIT_CONN_LADDER_S1_USB_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP1_USB_POWER_SUPERVISION_TIMEOUT
 	int "Step 1 on USB power: supervision timeout (10 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  Computed mode: 0, the default there, takes STEPS_SUPERVISION_TIMEOUT.
+	  Table mode: the USB power step's timeout.
 
-config ZMK_SPLIT_CONN_LADDER_S2_AFTER_MS
+config ZMK_SPLIT_CONN_LADDER_STEP2_AFTER_IDLE_MS
 	int "Step 2: delay after entering idle (ms)"
-	range 0 3600000
-	default 150000
+	range 0 86400000
+	default 180000
 
-config ZMK_SPLIT_CONN_LADDER_S2_INT
+config ZMK_SPLIT_CONN_LADDER_STEP2_INTERVAL
 	int "Step 2: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
-	default 49
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 67
+	help
+	  As STEP1_INTERVAL: computed mode 0 computes it, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S2_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP2_LATENCY
 	int "Step 2: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
-	default 5
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 3
+	help
+	  As STEP1_LATENCY: computed mode -1 takes the series, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S2_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP2_SUPERVISION_TIMEOUT
 	int "Step 2: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
-config ZMK_SPLIT_CONN_LADDER_S2_USB_INT
+config ZMK_SPLIT_CONN_LADDER_STEP2_USB_POWER_INTERVAL
 	int "Step 2 on USB power: connection interval (1.25 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
 	default ZMK_SPLIT_BLE_PREF_INT
 
-config ZMK_SPLIT_CONN_LADDER_S2_USB_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP2_USB_POWER_LATENCY
 	int "Step 2 on USB power: peripheral latency (events)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 29
+	help
+	  As STEP1_USB_POWER_LATENCY: computed mode -1 puts it on the ramp.
 
-config ZMK_SPLIT_CONN_LADDER_S2_USB_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP2_USB_POWER_SUPERVISION_TIMEOUT
 	int "Step 2 on USB power: supervision timeout (10 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_USB_POWER_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
-config ZMK_SPLIT_CONN_LADDER_S3_AFTER_MS
+config ZMK_SPLIT_CONN_LADDER_STEP3_AFTER_IDLE_MS
 	int "Step 3: delay after entering idle (ms)"
-	range 0 3600000
+	range 0 86400000
 	default 600000
 
-config ZMK_SPLIT_CONN_LADDER_S3_INT
+config ZMK_SPLIT_CONN_LADDER_STEP3_INTERVAL
 	int "Step 3: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
-	default 97
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 109
+	help
+	  As STEP1_INTERVAL: computed mode 0 computes it, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S3_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP3_LATENCY
 	int "Step 3: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 1
+	help
+	  As STEP1_LATENCY: computed mode -1 takes the series, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S3_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP3_SUPERVISION_TIMEOUT
 	int "Step 3: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
-config ZMK_SPLIT_CONN_LADDER_S3_USB_INT
+config ZMK_SPLIT_CONN_LADDER_STEP3_USB_POWER_INTERVAL
 	int "Step 3 on USB power: connection interval (1.25 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
 	default ZMK_SPLIT_BLE_PREF_INT
 
-config ZMK_SPLIT_CONN_LADDER_S3_USB_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP3_USB_POWER_LATENCY
 	int "Step 3 on USB power: peripheral latency (events)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 49
+	help
+	  As STEP1_USB_POWER_LATENCY: computed mode -1 puts it on the ramp.
 
-config ZMK_SPLIT_CONN_LADDER_S3_USB_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP3_USB_POWER_SUPERVISION_TIMEOUT
 	int "Step 3 on USB power: supervision timeout (10 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_USB_POWER_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
-config ZMK_SPLIT_CONN_LADDER_S4_AFTER_MS
+config ZMK_SPLIT_CONN_LADDER_STEP4_AFTER_IDLE_MS
 	int "Step 4: delay after entering idle (ms)"
-	range 0 3600000
-	default 1800000
+	range 0 86400000
+	default 1200000
 
-config ZMK_SPLIT_CONN_LADDER_S4_INT
+config ZMK_SPLIT_CONN_LADDER_STEP4_INTERVAL
 	int "Step 4: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 319
+	help
+	  As STEP1_INTERVAL: computed mode 0 computes it, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S4_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP4_LATENCY
 	int "Step 4: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 0
+	help
+	  As STEP1_LATENCY: computed mode -1 takes the series, a value sets it.
 
-config ZMK_SPLIT_CONN_LADDER_S4_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP4_SUPERVISION_TIMEOUT
 	int "Step 4: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
-config ZMK_SPLIT_CONN_LADDER_S4_USB_INT
+config ZMK_SPLIT_CONN_LADDER_STEP4_USB_POWER_INTERVAL
 	int "Step 4 on USB power: connection interval (1.25 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 6 3200
 	default ZMK_SPLIT_BLE_PREF_INT
 
-config ZMK_SPLIT_CONN_LADDER_S4_USB_LATENCY
+config ZMK_SPLIT_CONN_LADDER_STEP4_USB_POWER_LATENCY
 	int "Step 4 on USB power: peripheral latency (events)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 49
+	help
+	  As STEP1_USB_POWER_LATENCY: computed mode -1 puts it on the ramp.
 
-config ZMK_SPLIT_CONN_LADDER_S4_USB_TIMEOUT
+config ZMK_SPLIT_CONN_LADDER_STEP4_USB_POWER_SUPERVISION_TIMEOUT
 	int "Step 4 on USB power: supervision timeout (10 ms units)"
-	depends on ZMK_SPLIT_CONN_LADDER_USB_STEPS
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
 	default 800
+	help
+	  As STEP1_USB_POWER_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_AFTER_IDLE_MS
+	int "Step 5: delay after entering idle (ms)"
+	range 0 86400000
+	default 1800000
+	help
+	  Steps 5 and 6 are built only with STEP_COUNT at 5 or 6. Computed,
+	  they continue the series; in the table they default to step 4's
+	  parameters and only repeat it ("parameters already in place")
+	  unless given values of their own.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_INTERVAL
+	int "Step 5: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 6 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 319
+	help
+	  As STEP1_INTERVAL: computed mode 0 computes it, a value sets it.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_LATENCY
+	int "Step 5: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 0
+	help
+	  As STEP1_LATENCY: computed mode -1 takes the series, a value sets it.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_SUPERVISION_TIMEOUT
+	int "Step 5: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 800
+	help
+	  As STEP1_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_USB_POWER_INTERVAL
+	int "Step 5 on USB power: connection interval (1.25 ms units)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 6 3200
+	default ZMK_SPLIT_BLE_PREF_INT
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_USB_POWER_LATENCY
+	int "Step 5 on USB power: peripheral latency (events)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 49
+	help
+	  As STEP1_USB_POWER_LATENCY: computed mode -1 puts it on the ramp.
+
+config ZMK_SPLIT_CONN_LADDER_STEP5_USB_POWER_SUPERVISION_TIMEOUT
+	int "Step 5 on USB power: supervision timeout (10 ms units)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 800
+	help
+	  As STEP1_USB_POWER_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_AFTER_IDLE_MS
+	int "Step 6: delay after entering idle (ms)"
+	range 0 86400000
+	default 2400000
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_INTERVAL
+	int "Step 6: connection interval (1.25 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 6 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 319
+	help
+	  As STEP1_INTERVAL: computed mode 0 computes it, a value sets it.
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_LATENCY
+	int "Step 6: peripheral latency (events)"
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 0
+	help
+	  As STEP1_LATENCY: computed mode -1 takes the series, a value sets it.
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_SUPERVISION_TIMEOUT
+	int "Step 6: supervision timeout (10 ms units)"
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 800
+	help
+	  As STEP1_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_USB_POWER_INTERVAL
+	int "Step 6 on USB power: connection interval (1.25 ms units)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS && !ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 6 3200
+	default ZMK_SPLIT_BLE_PREF_INT
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_USB_POWER_LATENCY
+	int "Step 6 on USB power: peripheral latency (events)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range -1 499 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 0 499
+	default -1 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 49
+	help
+	  As STEP1_USB_POWER_LATENCY: computed mode -1 puts it on the ramp.
+
+config ZMK_SPLIT_CONN_LADDER_STEP6_USB_POWER_SUPERVISION_TIMEOUT
+	int "Step 6 on USB power: supervision timeout (10 ms units)"
+	depends on ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS
+	range 0 3200 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	range 10 3200
+	default 0 if ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS
+	default 800
+	help
+	  As STEP1_USB_POWER_SUPERVISION_TIMEOUT: computed mode 0 takes
+	  STEPS_SUPERVISION_TIMEOUT.
 
 module = ZMK_SPLIT_CONN_LADDER
 module-str = zmk_split_conn_ladder
@@ -446,42 +958,192 @@ source "subsys/logging/Kconfig.template.log_config"
 endif # ZMK_SPLIT_CONN_LADDER
 
 #
-# The PERIPHERAL half's side of the ladder: one optional report.
+# Both halves.
 #
-menuconfig ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER
+config ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP
+	bool "Deep sleep early when there is nothing to work for"
+	depends on ZMK_SPLIT_BLE
+	depends on ZMK_SPLIT_CONN_LADDER || !ZMK_SPLIT_ROLE_CENTRAL
+	depends on HAS_POWEROFF
+	default n if ZMK_USB_LOGGING
+	default y
+	select POWEROFF
+	select PM_DEVICE
+	select ZMK_PM_DEVICE_SUSPEND_RESUME
+	help
+	  The module's own deep sleep, apart from ZMK's: it works with
+	  ZMK_SLEEP off, and ZMK_IDLE_SLEEP_TIMEOUT does not affect it. It
+	  counts only idle time (ZMK_IDLE_TIMEOUT, 30 s by default, then this
+	  much more) and puts the half into the same System OFF as ZMK's sleep,
+	  woken the same way -- a key, the trackball, a cable.
+
+	  The central half sleeps after ABSENCE_WAIT_MS of idle
+	    - with no computer: none connected on the active Bluetooth
+	      profile, and none that configured it over USB (a computer
+	      asleep counts, a charger or a power bank does not) -- on any
+	      power, cable or battery;
+	    - with EARLY_SLEEP_WITHOUT_PERIPHERAL, without the other half too,
+	      unless it is on USB power with a computer there.
+	  The peripheral half sleeps after ABSENCE_WAIT_MS of idle without the
+	  central -- on USB power too: without it the half has nothing to do.
+
+	  The wait counts from the later of entering idle and the reason
+	  arising, and starts again whenever a computer, the other half or
+	  USB power comes or goes. While the active profile is open for
+	  pairing, the central waits EARLY_SLEEP_BLE_PAIRING_WAIT_MS instead.
+
+	  Off by default in a USB-logging build (ZMK_USB_LOGGING), so that
+	  the log does not end when the other half goes away; y turns it on
+	  there too.
+
+config ZMK_SPLIT_CONN_LADDER_ABSENCE_WAIT_MS
+	int "Wait before sleeping early or searching at low power (ms, 0: auto)"
+	depends on ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP || ZMK_SPLIT_CONN_LADDER_LOW_POWER_PERIPHERAL_SEARCH
+	range 0 3600000
+	default 0
+	help
+	  W: how long a half goes on without something it needs before it
+	  saves power. One number for two uses:
+
+	    - the early sleep (EARLY_SLEEP): W of idle with a reason to sleep
+	      -- no computer, no other half -- and the half sleeps;
+	    - the low-power search (LOW_POWER_PERIPHERAL_SEARCH): W of the
+	      full search (or the middle one) for a missing other half, and
+	      the central switches to listening now and then.
+
+	  One number on purpose. The other half, once it has lost this one,
+	  waits its own W before its early sleep, so the full or the middle
+	  search runs for as long as that half is still awake and calling;
+	  after that it is asleep, and the key that wakes it makes it call
+	  again, which the low-power search hears. With 0 the central's W
+	  (35 s) is not shorter than the other half's (30 or 35 s).
+
+	  0 picks it: the settings-save formula below, or 30 s, whichever is
+	  longer -- 35 s with ZMK's defaults on the central half, 30 s on a
+	  peripheral half with nothing to save, 35 s on one with underglow,
+	  backlight or ZMK_EXT_POWER (on by default in ZMK; a board's
+	  own configuration may turn it off).
+
+	  The formula keeps a sleep from cutting off a settings write: ZMK
+	  writes a changed Bluetooth profile, output, underglow, backlight or
+	  external power state ZMK_SETTINGS_SAVE_DEBOUNCE (60 s) after the
+	  change, and idle starts ZMK_IDLE_TIMEOUT (30 s) after the last key,
+	  so W >= 60 s - 30 s + 5 s = 35 s. It applies on the central half
+	  always (with SETTINGS), and on a peripheral half with
+	  ZMK_RGB_UNDERGLOW, ZMK_BACKLIGHT or ZMK_EXT_POWER. Underglow that
+	  turns off by itself (ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE, _AUTO_OFF_USB)
+	  starts that write at the moment it does, with no key at all, so the
+	  sleep then also waits ZMK_SETTINGS_SAVE_DEBOUNCE + 5 s after
+	  entering idle or after a cable goes in or out.
+
+	  A value set here must not be below the formula nor below 10000;
+	  the build stops otherwise.
+
+config ZMK_SPLIT_CONN_LADDER_TEST_SLEEP_AND_SEARCH_IGNORE_USB
+	bool "TEST ONLY: early sleep and low-power search ignore USB (central half)"
+	depends on ZMK_SPLIT_CONN_LADDER
+	depends on ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP || ZMK_SPLIT_CONN_LADDER_LOW_POWER_PERIPHERAL_SEARCH
+	default n
+	help
+	  For testing with a USB log, never for daily use. A USB log needs a
+	  computer on the cable, and that computer is exactly what keeps the
+	  central half from sleeping early (it counts as a computer) and keeps
+	  the full search for the other half on (the keys go to it). With this
+	  on, the early sleep and the low-power search act as they do on
+	  battery with no USB host: a USB host is neither a computer nor a
+	  reason to search at full rate, USB power is no reason to stay awake,
+	  and plugging or unplugging does not restart the count. A Bluetooth
+	  host, the other half and the timers work as always, so every sleep
+	  and search scenario can be watched in the log -- up to "early sleep
+	  in 100 ms", where the half powers off, the log ends and the
+	  trackball or a key wakes it, cable in or not.
+
+	  The middle search (MIDDLE_PERIPHERAL_SEARCH_INTERVAL_MS) follows the
+	  output as ZMK selected it, so &out picks the case: &out OUT_BLE with
+	  a Bluetooth host connected -- the middle search, then the low-power
+	  one; the keys on USB -- as with no host, ZMK's full search for
+	  ABSENCE_WAIT_MS, then the low-power one.
+
+	  The ladder is not affected: on USB power it still runs the USB power
+	  steps (&ladder LADDER_ON forces the battery ones). The build warns
+	  while this is on, and the log says so at boot.
+
+#
+# The PERIPHERAL half's report to the ladder.
+#
+menuconfig ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT
 	bool "Tell the central half whether this half is on USB power"
 	depends on ZMK_SPLIT_BLE && !ZMK_SPLIT_ROLE_CENTRAL
-	depends on SOC_SERIES_NRF52X
+	depends on SOC_NRF52840 || SOC_NRF52833 || SOC_NRF52820
+	default y
 	help
-	  For the PERIPHERAL half's .conf (k04_micro_left.conf), not the
-	  central's. With it, the ladder on the central half holds ACTIVE when
-	  both halves are on USB power: then neither has anything to save.
-	  Without it the central counts this half as on battery, which only
-	  costs the cable steps' slower LED sync while both are plugged in.
+	  For the PERIPHERAL half; on by default. With it, the ladder on the
+	  central half gives ACTIVE latency 0 while this half is on USB power
+	  (nothing to save here), and holds ACTIVE when both halves are.
+	  Without it the central counts this half as on battery.
 
-	  Reads the nRF52840's own VBUS detector once a second (it needs no
-	  USB stack, which a peripheral half does not have) and publishes the
+	  Reads the nRF52840's VBUS detector once a second and publishes the
 	  result as a small GATT characteristic; the central reads it on every
 	  connect and is notified of changes. The cost is a timer wake-up per
 	  second, well under a microamp.
 
 	  The report also carries this half's uptime, which is how the
-	  central tells this half's deep sleep (or any restart) from a lost
-	  link: without it, backoff can take a sleep followed by a quick key
-	  press on this half for a step that failed.
+	  central tells this half's sleep (or any restart) from a lost link:
+	  without it, backoff can take a sleep followed by a quick key press
+	  on this half for a step that failed.
 
-if ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER
+if ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT
 
-module = ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER
-module-str = zmk_split_conn_ladder_power
+module = ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT
+module-str = zmk_split_conn_ladder_usb_power_report
 source "subsys/logging/Kconfig.template.log_config"
 
-endif # ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER
+endif # ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT
+
+menuconfig ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP
+	bool "Close the split link before this half goes to sleep"
+	depends on ZMK_SPLIT_BLE && !ZMK_SPLIT_ROLE_CENTRAL
+	default y
+	help
+	  For the PERIPHERAL half; on by default. ZMK's sleep powers a half
+	  off without closing the link, so the central learns of it only when
+	  its supervision timeout runs out -- 4 s at ACTIVE, 8 s at a step --
+	  and meanwhile anything it sends this way (a layer colour pushed to
+	  this half's LED, say) waits in the Bluetooth buffers it shares with
+	  the reports to the computer: a trackball on the central stalls.
+
+	  With this on, the SLEEP event closes the link first ("remote user
+	  terminated", reason 0x13 on the central) and waits for the close to
+	  complete -- a few tens of milliseconds at ACTIVE. The wait is limited
+	  to two connection intervals and a margin, never less than 1.5 s nor
+	  more than the supervision timeout and the margin. The central knows at once, starts looking
+	  for this half, and does not count the loss against the ladder.
+	  Waking is unchanged.
+
+	  Other threads run during the close. An LED driver that paints from
+	  a thread of its own must keep its LEDs dark once it has seen SLEEP,
+	  or a colour arriving meanwhile lights them again for the whole sleep.
+
+if ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP
+
+module = ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP
+module-str = zmk_split_conn_ladder_close_link
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP
+
+if ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP && !ZMK_SPLIT_ROLE_CENTRAL
+
+module = ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP
+module-str = zmk_split_conn_ladder_early_sleep
+source "subsys/logging/Kconfig.template.log_config"
+
+endif
 
 #
 # Independent of the ladder: lives here only so that one module covers both.
 #
-menuconfig ZMK_USB_RESUME_RESEND
+menuconfig ZMK_USB_RESEND_KEYS_AFTER_WAKE
 	bool "Get the keyboard state to a USB host woken by a key"
 	depends on ZMK_USB
 	help
@@ -501,7 +1163,8 @@ menuconfig ZMK_USB_RESUME_RESEND
 	  a key that repeats until the next keystroke.
 
 	  With this on, after every wake of the bus -- a key, the trackball,
-	  a layer key or the host itself may have caused it -- the module
+	  a layer key or the host itself may have caused it; plugging the
+	  cable in is not one -- the module
 	  watches the keys until the host is seen reading. If a key report was
 	  dropped, it first compares what the host will hold with what is
 	  held now. If they differ -- a waking key
@@ -518,9 +1181,9 @@ menuconfig ZMK_USB_RESUME_RESEND
 	  cannot be recovered -- only one report fits in the endpoint. The log
 	  counts them.
 
-if ZMK_USB_RESUME_RESEND
+if ZMK_USB_RESEND_KEYS_AFTER_WAKE
 
-config ZMK_USB_RESUME_RESEND_DELAY_MS
+config ZMK_USB_RESEND_KEYS_AFTER_WAKE_DELAY_MS
 	int "Delay between the resume and the first write (ms)"
 	range 0 500
 	default 10
@@ -528,7 +1191,7 @@ config ZMK_USB_RESUME_RESEND_DELAY_MS
 	  The snapshot is taken when the write runs, so shorter catches
 	  quicker taps. ZMK itself writes as soon as the bus reads as resumed.
 
-config ZMK_USB_RESUME_RESEND_WINDOW_MS
+config ZMK_USB_RESEND_KEYS_AFTER_WAKE_GIVE_UP_MS
 	int "Give up if the host is not reading after this long (ms)"
 	range 1000 120000
 	default 30000
@@ -540,8 +1203,8 @@ config ZMK_USB_RESUME_RESEND_WINDOW_MS
 	  than walking away: the next key change is re-sent once the host
 	  reads, or its release would be refused behind that report.
 
-module = ZMK_USB_RESUME_RESEND
-module-str = zmk_usb_resume_resend
+module = ZMK_USB_RESEND_KEYS_AFTER_WAKE
+module-str = zmk_usb_resend_keys_after_wake
 source "subsys/logging/Kconfig.template.log_config"
 
-endif # ZMK_USB_RESUME_RESEND
+endif # ZMK_USB_RESEND_KEYS_AFTER_WAKE

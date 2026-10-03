@@ -17,12 +17,15 @@
  *
  *    &ladder LADDER_TOG    ON <-> AUTO (из OFF — в ON)
  *    &ladder LADDER_CYCLE  AUTO -> ON -> OFF -> AUTO, все режимы одной клавишей
- *    &ladder LADDER_AUTO   AUTO: на батарее ступени батареи, на кабеле —
- *                          кабельные (ACTIVE, если на кабеле обе половины)
- *    &ladder LADDER_ON     ON: ступени батареи и от USB (для логов)
+ *    &ladder LADDER_AUTO   AUTO: на батарее ступени для батареи, на питании
+ *                          от USB — ступени для USB (ACTIVE, если от USB
+ *                          питаются обе половины)
+ *    &ladder LADDER_ON     ON: ступени для батареи при любом питании (для
+ *                          логов по USB)
  *    &ladder LADDER_OFF    OFF: всегда ACTIVE (для сравнения расхода)
  *
- *    Режим живёт в RAM: после перезагрузки снова AUTO.
+ *    Режим живёт в RAM: после перезагрузки снова тот, с которым клавиатура
+ *    загружается (AUTO; ON при BOOT_IN_AUTO_MODE=n).
  *
  * 3. ZMK Studio. Поведение попадает в прошивку ТОЛЬКО если .keymap его
  *    упоминает (узел /omit-if-no-ref/, символ Kconfig идёт за

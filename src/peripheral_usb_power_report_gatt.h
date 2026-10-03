@@ -9,7 +9,7 @@
 #include <zephyr/bluetooth/uuid.h>
 
 /*
- * The USB power report, peripheral_power.c -> peripheral_power_client.c.
+ * The USB power report, peripheral_usb_power_report.c -> peripheral_usb_power_report_client.c.
  * Random UUIDs, fixed for good: both halves have to agree on them, and they
  * are built from different .conf files, possibly months apart.
  *

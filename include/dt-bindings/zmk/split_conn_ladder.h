@@ -12,9 +12,9 @@
  * disagree about what a number means.
  */
 
-/* The power source decides: the battery steps on battery, the cable steps on
- * USB power -- or ACTIVE there, when the other half reports USB power too or
- * ZMK_SPLIT_CONN_LADDER_USB_STEPS is off. */
+/* The power source decides: the battery steps on battery, the USB power
+ * steps on USB power -- or ACTIVE there, when the other half reports USB
+ * power too or ZMK_SPLIT_CONN_LADDER_USB_POWER_STEPS is off. */
 #define LADDER_AUTO 0
 
 /* The battery steps regardless of power -- for watching them over a USB log. */

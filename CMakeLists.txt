@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 
-if(CONFIG_ZMK_SPLIT_CONN_LADDER OR CONFIG_ZMK_USB_RESUME_RESEND OR
-   CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER)
+if(CONFIG_ZMK_SPLIT_CONN_LADDER OR CONFIG_ZMK_USB_RESEND_KEYS_AFTER_WAKE OR
+   CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT OR
+   CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP OR
+   CONFIG_ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP)
   zephyr_library_named(zmk_split_conn_ladder)
 
   # ZMK keeps its own headers (zmk/*.h, drivers/behavior.h) private to the
@@ -19,16 +21,24 @@ if(CONFIG_ZMK_SPLIT_CONN_LADDER OR CONFIG_ZMK_USB_RESUME_RESEND OR
   # library and would not do that.
   zephyr_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+  # central half: the ladder, and what the other half says about its USB
+  # power -- ACTIVE's latency and the USB power steps depend on it
   zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER
-    src/split_conn_ladder.c)
-  # central half: what the other half says about its USB power
-  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_USB_STEPS
-    src/peripheral_power_client.c)
-  # peripheral half: saying it
-  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER
-    src/peripheral_power.c)
+    src/split_conn_ladder.c
+    src/peripheral_usb_power_report_client.c)
+  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_LOW_POWER_PERIPHERAL_SEARCH
+    src/low_power_search.c)
+  # both halves
+  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_EARLY_SLEEP
+    src/early_sleep.c)
+  # peripheral half: its USB power, for the ladder
+  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT
+    src/peripheral_usb_power_report.c)
+  # peripheral half: close the link before sleeping, so the central knows at once
+  zephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_CONN_LADDER_PERIPHERAL_CLOSE_LINK_BEFORE_SLEEP
+    src/peripheral_close_link_before_sleep.c)
   zephyr_library_sources_ifdef(CONFIG_ZMK_BEHAVIOR_SPLIT_CONN_LADDER
     src/behaviors/behavior_split_conn_ladder.c)
-  zephyr_library_sources_ifdef(CONFIG_ZMK_USB_RESUME_RESEND
-    src/usb_resume_resend.c)
+  zephyr_library_sources_ifdef(CONFIG_ZMK_USB_RESEND_KEYS_AFTER_WAKE
+    src/usb_resend_keys_after_wake.c)
 endif()

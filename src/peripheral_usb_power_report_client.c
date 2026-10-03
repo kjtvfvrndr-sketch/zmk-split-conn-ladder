@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: MIT
  *
  * Central half: learns whether the OTHER half is on USB power, so that the
- * ladder can hold ACTIVE when both are -- then neither has anything to save.
+ * computed ACTIVE can drop its latency to 0 while it is -- that half has
+ * nothing to save then -- and the ladder can hold ACTIVE when both are.
  *
- * The other half publishes one byte (peripheral_power.c, built there with
- * ZMK_SPLIT_CONN_LADDER_PERIPHERAL_POWER=y). On every split connection this
+ * The other half publishes its report (peripheral_usb_power_report.c, on by default
+ * there, ZMK_SPLIT_CONN_LADDER_PERIPHERAL_USB_POWER_REPORT). On every split connection this
  * finds it, subscribes to changes and reads the current value. A half built
  * without the report simply has no such service: that is logged once per
  * connection and the other half counts as on battery, which is what the
@@ -34,7 +35,7 @@
 #include <zephyr/logging/log.h>
 
 #include "ladder_internal.h"
-#include "peripheral_power_gatt.h"
+#include "peripheral_usb_power_report_gatt.h"
 
 LOG_MODULE_DECLARE(zmk_split_conn_ladder, CONFIG_ZMK_SPLIT_CONN_LADDER_LOG_LEVEL);
 
@@ -73,7 +74,7 @@ static void set_power(uint8_t value)
 		LOG_INF("other half: USB power %s", now ? "present" : "absent");
 	}
 	if (was != now) {
-		split_conn_ladder_peripheral_power_changed();
+		split_conn_ladder_peripheral_usb_power_changed();
 	}
 }
 
@@ -147,7 +148,7 @@ static uint8_t on_characteristic(struct bt_conn *conn, const struct bt_gatt_attr
 	sub.subscribe = on_subscribed;
 	sub.value = BT_GATT_CCC_NOTIFY;
 	sub.value_handle = value;
-	/* Our own service, laid out in peripheral_power_gatt.h: the CCC sits
+	/* Our own service, laid out in peripheral_usb_power_report_gatt.h: the CCC sits
 	 * right after the value. */
 	sub.ccc_handle = value + 1;
 	/* Dropped with the link rather than kept for the bond: every connection
@@ -282,7 +283,7 @@ static void on_disconnected(struct bt_conn *conn, uint8_t reason)
 	(void)k_work_cancel_delayable(&start_work);
 	/* Unknown again until the next connection reports. */
 	if (atomic_set(&on_usb, 0)) {
-		split_conn_ladder_peripheral_power_changed();
+		split_conn_ladder_peripheral_usb_power_changed();
 	}
 }
 
@@ -291,10 +292,10 @@ static struct bt_conn_cb conn_cb = {
 	.disconnected = on_disconnected,
 };
 
-static int peripheral_power_client_init(void)
+static int usb_power_report_client_init(void)
 {
 	bt_conn_cb_register(&conn_cb);
 	return 0;
 }
 
-SYS_INIT(peripheral_power_client_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+SYS_INIT(usb_power_report_client_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

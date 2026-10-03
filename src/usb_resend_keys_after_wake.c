@@ -33,7 +33,8 @@
  * keystroke: the host builds key events from differences between snapshots,
  * and sending the same snapshot twice repeats nothing. After every wake of the
  * bus -- whatever caused it: the gap between "bus up" and "host reading" is
- * the same for a wake by the trackball, a layer key or the host itself:
+ * the same for a wake by the trackball, a layer key or the host itself; a
+ * plug-in is not a wake (on_usb()):
  *
  *   - if a key report was dropped and what the host will hold differs from
  *     what is held now -- a waking key still down, or a release the host
@@ -49,7 +50,9 @@
  * What it cannot do: deliver key changes that happened entirely while the
  * host was not reading. Only one report fits in the endpoint, and the ones ZMK
  * failed to write are gone. The log counts them. Mouse reports carry relative
- * movement, which a second copy would apply twice, and are left alone.
+ * movement, which a second copy would apply twice, and are left alone -- their
+ * buttons with them: a click released behind a parked report stays held until
+ * the next mouse report.
  *
  * Independent of the ladder; it lives in the same module only for convenience.
  */
@@ -66,16 +69,17 @@
 #include <dt-bindings/zmk/hid_usage_pages.h>
 #include <zmk/endpoints.h>
 #include <zmk/event_manager.h>
+#include <zmk/events/endpoint_changed.h>
 #include <zmk/events/keycode_state_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/hid.h>
 #include <zmk/usb.h>
 #include <zmk/usb_hid.h>
 
-LOG_MODULE_REGISTER(zmk_usb_resume_resend, CONFIG_ZMK_USB_RESUME_RESEND_LOG_LEVEL);
+LOG_MODULE_REGISTER(zmk_usb_resend_keys_after_wake, CONFIG_ZMK_USB_RESEND_KEYS_AFTER_WAKE_LOG_LEVEL);
 
-#define DELAY_MS  CONFIG_ZMK_USB_RESUME_RESEND_DELAY_MS
-#define WINDOW_MS CONFIG_ZMK_USB_RESUME_RESEND_WINDOW_MS
+#define DELAY_MS   CONFIG_ZMK_USB_RESEND_KEYS_AFTER_WAKE_DELAY_MS
+#define GIVE_UP_MS CONFIG_ZMK_USB_RESEND_KEYS_AFTER_WAKE_GIVE_UP_MS
 
 /*
  * Retries while the endpoint is busy: 20 ms, doubling to 160 ms. Every refused
@@ -83,8 +87,9 @@ LOG_MODULE_REGISTER(zmk_usb_resume_resend, CONFIG_ZMK_USB_RESUME_RESEND_LOG_LEVE
  * build (usb_write() retries ZMK's USB_NUMOF_EP_WRITE_RETRIES=10 times), so
  * the backoff matters. The ceiling stays under the shortest auto-repeat delay
  * any host offers (225 ms on macOS), so a key-down the host reads is followed
- * by its key-up before it can repeat. After the window, only a change still
- * waiting to be written is retried, once a second.
+ * by its key-up before it can repeat. After GIVE_UP_MS, only a change still
+ * waiting to be written is retried, once a second -- a host that first reads
+ * that late can repeat a key for up to that second.
  */
 #define RETRY_MS      20
 #define RETRY_MAX_MS  160
@@ -131,13 +136,14 @@ static struct zmk_hid_consumer_report_body host_view_cons;
  *                proves the host reads now (it must have taken the first)
  *   ours_unread  one went through and nobody has proven it read -- it may be
  *                parked in the endpoint still, in front of whatever comes
- *                next. Survives a restart; only a proof, a port reset or an
- *                unplug clears it.
+ *                next. Survives a restart; only a proof, a port reset, an
+ *                unplug or the output moving clears it.
  * A single flag for both would either end a sync on one write after a nap
  * (a write read BEFORE the nap proves nothing now) or walk away from a report
  * of ours still parked.
  */
 static uint32_t sync_start;
+static uint32_t first_write_ms; /* when ours first went through, since the wake */
 static uint32_t refused;
 static uint32_t retry_ms = RETRY_MS;
 static atomic_val_t check; /* dropped pages still to compare with the host */
@@ -321,19 +327,19 @@ static void sync_cb(struct k_work *work)
 		}
 	}
 
-	const bool in_window = now - sync_start < WINDOW_MS;
+	const bool before_give_up = now - sync_start < GIVE_UP_MS;
 	atomic_val_t pages = atomic_get(&dirty);
 	bool probe = false;
 
 	if (!pages) {
-		if (in_window && landed) {
+		if (before_give_up && landed) {
 			/* Unchanged since our write this wake: rewrite the keyboard
 			 * snapshot as the probe that tells whether it was read. It
 			 * cannot take a slot from anything -- while ours is unread
 			 * it is simply refused. */
 			pages = PAGE_KEY;
 			probe = true;
-		} else if (in_window) {
+		} else if (before_give_up) {
 			/*
 			 * Nothing to deliver, nothing of ours written this wake:
 			 * only watch. A key typed before the host polls is how
@@ -343,11 +349,11 @@ static void sync_cb(struct k_work *work)
 			 * be refused, and if it was read then, a probe would park
 			 * a report in the slot the next keystroke needs.
 			 */
-			k_work_reschedule(&sync_work, K_MSEC(WINDOW_MS - (now - sync_start)));
+			k_work_reschedule(&sync_work, K_MSEC(GIVE_UP_MS - (now - sync_start)));
 			return;
 		} else if (ours_unread) {
 			/*
-			 * Past the window with a write of ours perhaps still
+			 * Past GIVE_UP_MS with a write of ours perhaps still
 			 * unread. It holds the current state, so nothing needs
 			 * correcting now; stop polling for it, but stay armed --
 			 * a key change would be refused behind it, and
@@ -411,7 +417,7 @@ static void sync_cb(struct k_work *work)
 			landed = true;
 		}
 		refused++;
-		if (in_window) {
+		if (before_give_up) {
 			k_work_reschedule(&sync_work, K_MSEC(retry_ms));
 			retry_ms = MIN(retry_ms * 2, RETRY_MAX_MS);
 		} else {
@@ -434,22 +440,37 @@ static void sync_cb(struct k_work *work)
 	}
 
 	if (landed) {
-		/* This write found the endpoint free, so our previous one from
+		/*
+		 * This write found the endpoint free, so our previous one from
 		 * this wake was read: the host is polling, and holds the latest
-		 * state or will within a millisecond. */
-		LOG_INF("host reading again %u ms after the wake -- in sync; %u key changes "
-			"meanwhile, %u writes refused",
-			now - sync_start, (unsigned int)atomic_get(&changes), refused);
+		 * state or will within a millisecond.
+		 *
+		 * When it started polling is known only if a write was refused
+		 * first. With none refused, it was reading by the time we first
+		 * had anything to write -- which after a wake that dropped
+		 * nothing is the first key change, whenever that came -- and the
+		 * time says when that was, not how long the host took.
+		 */
+		if (refused) {
+			LOG_INF("host reading again %u ms after the wake -- in sync; %u key "
+				"changes meanwhile, %u writes refused",
+				now - sync_start, (unsigned int)atomic_get(&changes), refused);
+		} else {
+			LOG_INF("host already reading at our first write, %u ms after the wake -- "
+				"in sync; %u key changes meanwhile",
+				first_write_ms, (unsigned int)atomic_get(&changes));
+		}
 		ours_unread = false;
 		stop();
 		return;
 	}
 
 	landed = true;
-	if (in_window) {
+	first_write_ms = now - sync_start;
+	if (before_give_up) {
 		k_work_reschedule(&sync_work, K_MSEC(RETRY_MS)); /* the probe */
 	}
-	/* Past the window: no probing. The next key change, written after this
+	/* Past GIVE_UP_MS: no probing. The next key change, written after this
 	 * one, is the proof -- on_keycode() brings us back for it. */
 }
 
@@ -499,8 +520,12 @@ static void on_keycode(const struct zmk_keycode_state_changed *ev)
 		return;
 	}
 
-	if (zmk_usb_get_status() == USB_DC_SUSPEND) {
-		/* ZMK's suspend branch is throwing this report away right now. */
+	if (!bus_up()) {
+		/* ZMK is throwing this report away right now: its suspend branch
+		 * asks for a wakeup and drops it, and a bus being reset or not yet
+		 * configured again refuses it (-ENODEV) -- the output can still
+		 * name USB for a moment after the bus went, until ZMK's event for
+		 * it has run. */
 		if (!atomic_or(&dropped, page)) {
 			dropped_at = k_uptime_get_32();
 		}
@@ -525,6 +550,18 @@ static void on_usb(void)
 	const enum usb_dc_status_code status = zmk_usb_get_status();
 
 	if (status == USB_DC_SUSPEND) {
+		/*
+		 * Only a bus the host has configured can be put to sleep. Before
+		 * that -- the cable just went in, or the keyboard booted on one --
+		 * the bus idles until the host's first reset, and the nRF
+		 * controller reports the idle as a suspend too: Zephyr passes on
+		 * SUSPEND, RESET, RESUME ahead of CONFIGURED (zephyr#14826).
+		 * Nobody is asleep then, and nothing of ZMK's has gone to USB;
+		 * counted, it made the enumeration that follows look like a wake.
+		 */
+		if (!zmk_usb_is_hid_ready()) {
+			return;
+		}
 		if (!suspended) {
 			suspended = true;
 			suspended_at = k_uptime_get_32();
@@ -605,6 +642,22 @@ static void on_usb(void)
 	k_work_reschedule(&sync_work, K_MSEC(DELAY_MS));
 }
 
+/*
+ * The output moved, to USB or away from it. ZMK clears every report on the way
+ * (zmk_endpoints_clear_current()) and sends the empty ones to the endpoint it
+ * leaves, outside the keycode events this file watches. What the USB host
+ * holds is then nothing -- told so on the way out, or never told anything
+ * since -- and a sync for the old state has nothing left to do.
+ */
+static void on_output(void)
+{
+	stop();
+	atomic_set(&dropped, 0);
+	host_forgets();
+	landed = false;
+	ours_unread = false;
+}
+
 static int on_event(const zmk_event_t *eh)
 {
 	const struct zmk_keycode_state_changed *kc = as_zmk_keycode_state_changed(eh);
@@ -613,11 +666,14 @@ static int on_event(const zmk_event_t *eh)
 		on_keycode(kc);
 	} else if (as_zmk_usb_conn_state_changed(eh)) {
 		on_usb();
+	} else if (as_zmk_endpoint_changed(eh)) {
+		on_output();
 	}
 
 	return ZMK_EV_EVENT_BUBBLE;
 }
 
-ZMK_LISTENER(zmk_usb_resume_resend, on_event);
-ZMK_SUBSCRIPTION(zmk_usb_resume_resend, zmk_keycode_state_changed);
-ZMK_SUBSCRIPTION(zmk_usb_resume_resend, zmk_usb_conn_state_changed);
+ZMK_LISTENER(zmk_usb_resend_keys_after_wake, on_event);
+ZMK_SUBSCRIPTION(zmk_usb_resend_keys_after_wake, zmk_keycode_state_changed);
+ZMK_SUBSCRIPTION(zmk_usb_resend_keys_after_wake, zmk_usb_conn_state_changed);
+ZMK_SUBSCRIPTION(zmk_usb_resend_keys_after_wake, zmk_endpoint_changed);

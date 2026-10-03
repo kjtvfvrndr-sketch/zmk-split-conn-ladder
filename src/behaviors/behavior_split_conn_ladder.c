@@ -7,7 +7,7 @@
  *
  *   &ladder LADDER_TOG    ON <-> AUTO (from OFF: ON)
  *   &ladder LADDER_CYCLE  AUTO -> ON -> OFF -> AUTO
- *   &ladder LADDER_AUTO   battery steps on battery, cable steps on USB power
+ *   &ladder LADDER_AUTO   battery steps on battery, USB power steps on USB power
  *                         (ACTIVE when both halves are on USB power)
  *   &ladder LADDER_ON     battery steps regardless of power
  *   &ladder LADDER_OFF    never step down
