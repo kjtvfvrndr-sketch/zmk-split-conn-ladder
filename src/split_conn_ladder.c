@@ -104,8 +104,14 @@
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS)
+#include <zmk/ble.h>
 #include <zmk/endpoints.h>
+#include <zmk/events/ble_active_profile_changed.h>
 #include <zmk/events/endpoint_changed.h>
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS) && IS_ENABLED(CONFIG_ZMK_BLE_HOST_LINK)
+#include <zmk_ble_host_link/ble_host_link.h>
 #endif
 
 #include <dt-bindings/zmk/split_conn_ladder.h>
@@ -1377,11 +1383,14 @@ static void find_host(struct bt_conn *conn, void *data)
 	    info.state != BT_CONN_STATE_CONNECTED || info.role == BT_CONN_ROLE_CENTRAL) {
 		return;
 	}
-	/* ZMK keeps one computer connected at a time; were there more, the
-	 * busiest link is the one to keep clear of. */
-	if (*host == 0 || info.le.interval < *host) {
-		*host = info.le.interval;
+	/* ZMK keeps every computer that connected, the active profile's or
+	 * not, and only the active one gets any input: its link is the one to
+	 * keep clear of. Another profile's host, idle in the background, says
+	 * nothing about the timing that matters. */
+	if (bt_addr_le_cmp(info.le.dst, zmk_ble_active_profile_addr()) != 0) {
+		return;
 	}
+	*host = info.le.interval;
 }
 
 /*
@@ -1705,10 +1714,37 @@ static void reschedule(k_timeout_t delay)
 	(void)k_work_reschedule_for_queue(&ladder_q, &ladder_work, delay);
 }
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS) && IS_ENABLED(CONFIG_ZMK_BLE_HOST_LINK)
+/* The output or the other half's power changed: the recompute is due now,
+ * search of the host link or not. */
+static atomic_t table_due_now;
+#endif
+
+/* A change that is not the host link's own (see table_work_cb()). */
+static void table_due_now_too(void)
+{
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS) && IS_ENABLED(CONFIG_ZMK_BLE_HOST_LINK)
+	atomic_set(&table_due_now, 1);
+#endif
+}
+
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS)
+#if IS_ENABLED(CONFIG_ZMK_BLE_HOST_LINK)
+static struct k_work_delayable table_work;
+#endif
+
 static void table_work_cb(struct k_work *work)
 {
 	ARG_UNUSED(work);
+#if IS_ENABLED(CONFIG_ZMK_BLE_HOST_LINK)
+	/* zmk-ble-host-link is still trying parameters on the host link: one
+	 * recompute for its result, not one per request it tries -- unless
+	 * something else changed meanwhile. */
+	if (!atomic_set(&table_due_now, 0) && zmk_ble_host_link_is_searching()) {
+		(void)k_work_reschedule_for_queue(&ladder_q, &table_work, K_MSEC(HOST_SETTLE_MS));
+		return;
+	}
+#endif
 	table_dirty = true;
 	reschedule(K_NO_WAIT);
 }
@@ -1761,6 +1797,7 @@ struct k_work_q *split_conn_ladder_work_q(void)
  * the computed ACTIVE follow -- its latency is 0 while that half is on USB. */
 void split_conn_ladder_peripheral_usb_power_changed(void)
 {
+	table_due_now_too();
 	host_link_changed(HOST_CHANGED);
 	reschedule(K_NO_WAIT);
 }
@@ -2467,6 +2504,27 @@ static void on_activity(enum zmk_activity_state state)
 	}
 }
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS)
+/* The active profile's index and computer as last seen. */
+static bool active_profile_seen;
+static uint8_t active_profile_seen_index;
+static bt_addr_le_t active_profile_seen_addr;
+
+/* The event names another profile, or another computer in the same slot,
+ * than the last one did. */
+static bool active_profile_is_another_computer(const struct zmk_ble_active_profile_changed *ev)
+{
+	const bt_addr_le_t *addr = ev->profile ? &ev->profile->peer : BT_ADDR_LE_ANY;
+	const bool another = !active_profile_seen || ev->index != active_profile_seen_index ||
+			     bt_addr_le_cmp(addr, &active_profile_seen_addr) != 0;
+
+	active_profile_seen = true;
+	active_profile_seen_index = ev->index;
+	bt_addr_le_copy(&active_profile_seen_addr, addr);
+	return another;
+}
+#endif
+
 static int on_event(const zmk_event_t *eh)
 {
 	const struct zmk_activity_state_changed *act = as_zmk_activity_state_changed(eh);
@@ -2488,6 +2546,21 @@ static int on_event(const zmk_event_t *eh)
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS)
 	/* The output moved between USB and Bluetooth, or to another profile. */
 	if (as_zmk_endpoint_changed(eh)) {
+		table_due_now_too();
+		host_link_changed(HOST_CHANGED);
+	}
+	/* The active profile became another one, or its slot another computer
+	 * (pairing on an open slot changes no endpoint): only its link counts
+	 * (find_host()). ZMK raises the event also when the active host merely
+	 * drops or comes back -- that is the host link's own coming and going,
+	 * which on_disconnected()/on_connected() already handle with their
+	 * wait for a host back in a moment. */
+	const struct zmk_ble_active_profile_changed *profile_changed =
+		as_zmk_ble_active_profile_changed(eh);
+	if (profile_changed && active_profile_is_another_computer(profile_changed)) {
+		/* Another computer: its link, not the last one's, from now on --
+		 * even while zmk-ble-host-link starts searching it. */
+		table_due_now_too();
 		host_link_changed(HOST_CHANGED);
 	}
 #endif
@@ -2502,6 +2575,7 @@ ZMK_SUBSCRIPTION(zmk_split_conn_ladder, zmk_usb_conn_state_changed);
 #endif
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_CONN_LADDER_COMPUTED_STEPS)
 ZMK_SUBSCRIPTION(zmk_split_conn_ladder, zmk_endpoint_changed);
+ZMK_SUBSCRIPTION(zmk_split_conn_ladder, zmk_ble_active_profile_changed);
 #endif
 
 /*
